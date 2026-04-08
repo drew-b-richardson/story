@@ -2,3 +2,4 @@ stories/
 __pycache__/
 .venv/
 *.pyc
+kokoro_models/

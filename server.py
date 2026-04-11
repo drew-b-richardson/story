@@ -493,19 +493,23 @@ def suggest():
     if not session["messages"]:
         return {"suggestions": []}
 
-    # System prompt + last few turns for context (keep it short)
-    system = session["messages"][:1]
-    recent = [m for m in session["messages"][1:] if m["role"] != "system"]
-    context = system + recent[-6:]
+    # Use a neutral system message so the model isn't locked into story-narrator mode,
+    # which causes it to ignore JSON instructions after a few turns.
+    suggest_system = (
+        "You are a creative writing assistant. Your only job is to suggest player actions. "
+        "You must respond with ONLY a valid JSON array of exactly 3 strings. No prose, no markdown."
+    )
+    recent = [m for m in session["messages"] if m["role"] != "system"]
+    context = recent[-6:]
 
     suggest_prompt = (
-        "Suggest exactly 3 brief actions or responses the player could take next in the scene. "
+        "Suggest exactly 3 brief actions or responses the player could take next in this scene. "
         "Each must be 1–2 sentences, written in first person as something the player does or says. "
         "Vary the tone: one bold/direct, one tender/warm, one cautious/indirect. "
         "Return ONLY a JSON array of 3 strings — no prose, no markdown fences, no commentary. "
         'Example: ["I reach for her hand.", "\\"Tell me,\\" I say softly.", "I look away, unsure."]'
     )
-    messages = context + [{"role": "user", "content": suggest_prompt}]
+    messages = [{"role": "system", "content": suggest_system}] + context + [{"role": "user", "content": suggest_prompt}]
 
     payload = json.dumps({
         "model": session["model"],
@@ -526,13 +530,21 @@ def suggest():
         # Strip markdown fences if present
         content = re.sub(r"^```(?:json)?\s*", "", content)
         content = re.sub(r"\s*```$", "", content.strip())
-        suggestions = json.loads(content)
-        if isinstance(suggestions, list):
-            suggestions = [str(s) for s in suggestions[:3]]
+        parsed = json.loads(content)
+        if isinstance(parsed, list):
+            suggestions = [str(s) for s in parsed[:3]]
+        elif isinstance(parsed, dict):
+            # JSON mode may wrap the array: {"suggestions": [...]} or {"actions": [...]}
+            for val in parsed.values():
+                if isinstance(val, list):
+                    suggestions = [str(s) for s in val[:3]]
+                    break
+            else:
+                suggestions = []
         else:
             suggestions = []
     except Exception as e:
-        print(f"Suggest error: {e}")
+        print(f"Suggest error: {e!r}")
         suggestions = []
 
     return {"suggestions": suggestions}

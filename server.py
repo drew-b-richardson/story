@@ -35,7 +35,7 @@ PRIMARY_FEMALE_CHARACTER_LANG  = "en-gb"
 # Secondary character voices (side characters who enter the scene)
 SECONDARY_MALE_CHARACTER_VOICE   = "am_onyx"
 SECONDARY_MALE_CHARACTER_LANG    = "en-us"
-SECONDARY_FEMALE_CHARACTER_VOICE = "af_nicole"
+SECONDARY_FEMALE_CHARACTER_VOICE = "af_aoede"
 SECONDARY_FEMALE_CHARACTER_LANG  = "en-us"
 
 app = Flask(__name__)
@@ -81,77 +81,116 @@ def _float32_to_wav(samples, sample_rate: int = 24000) -> bytes:
 
 
 # ── TTS segment parsing ───────────────────────────────────────
-# Past-tense verbs used for NPC / secondary character attribution
-_SPEECH_VERBS = r"(?:said|replied|answered|whispered|murmured|called|asked|demanded|muttered|added|continued|shouted|growled|breathed)"
-# Present AND past tense for player (second-person narration uses present tense: "you say", "you ask")
-_PLAYER_SPEECH_VERBS = r"(?:say|said|reply|replied|answer|answered|whisper|whispered|murmur|murmured|call|called|ask|asked|demand|demanded|mutter|muttered|add|added|continue|continued|shout|shouted|growl|growled|breathe|breathed)"
+# Speech verbs (both present and past tense) for attribution detection
+_SPEECH_VERBS = (
+    r"(?:said|say|says|replied|reply|replies|answered|answer|answers|"
+    r"whispered|whisper|whispers|murmured|murmur|murmurs|"
+    r"called|call|calls|asked|ask|asks|demanded|demand|demands|"
+    r"muttered|mutter|mutters|added|add|adds|continued|continue|continues|"
+    r"shouted|shout|shouts|growled|growl|growls|breathed|breathe|breathes|"
+    r"urged|urge|urges|insisted|insist|insists|snapped|snap|snaps|"
+    r"hissed|hiss|hisses|sighed|sigh|sighs|laughed|laugh|laughs|"
+    r"cried|cry|cries|begged|beg|begs|pleaded|plead|pleads|"
+    r"offered|offer|offers|suggested|suggest|suggests|exclaimed|exclaim|exclaims|"
+    r"declared|declare|declares|announced|announce|announces|"
+    r"groaned|groan|groans|moaned|moan|moans|purred|purr|purrs|"
+    r"teased|tease|teases|cooed|coo|coos|stammered|stammer|stammers|"
+    r"interrupted|interrupt|interrupts|protested|protest|protests|"
+    r"admitted|admit|admits|confessed|confess|confesses)"
+)
+# Player-specific version kept for backwards compat but now same coverage
+_PLAYER_SPEECH_VERBS = _SPEECH_VERBS
 _NAMED_ATTR_RE = re.compile(rf'\b([A-Z][a-z]{{2,}})\s+{_SPEECH_VERBS}\b')
 
 
-def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun: str) -> str:
+def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun: str,
+                    secondary_characters: dict[str, str] | None = None) -> str:
     """
     Classify the speaker of a quoted passage from surrounding narrator text.
     Returns: "player" | "other" | "secondary_male" | "secondary_female"
 
+    secondary_characters: dict mapping lowercase name → gender ("male"/"female")
+
     Uses position-based priority: whichever attribution tag appears earliest in
     the text wins, so "she replied and you answered" correctly reads "she replied"
     rather than letting the fixed-order player check override it.
+
+    Name-based matches are authoritative and take priority over pronoun-based
+    matches at the same position.
     """
     if not narr:
         return "other"
 
-    candidates: list[tuple[int, str]] = []  # (match_start, speaker_type)
+    if secondary_characters is None:
+        secondary_characters = {}
+
+    # (match_start, speaker_type, is_name_match) — name matches break ties
+    candidates: list[tuple[int, str, bool]] = []
 
     # Player: "you said/asked/…" (second-person, present or past)
     for m in re.finditer(rf'\byou\s+{_PLAYER_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-        candidates.append((m.start(), "player"))
+        candidates.append((m.start(), "player", True))
 
     # Player by name: "Andrew said" (third-person fallback)
     if player_name:
         for m in re.finditer(rf'\b{re.escape(player_name)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-            candidates.append((m.start(), "player"))
+            candidates.append((m.start(), "player", True))
 
     # Primary NPC by name: "Amy said"
     if other_name:
         for m in re.finditer(rf'\b{re.escape(other_name)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-            candidates.append((m.start(), "other"))
+            candidates.append((m.start(), "other", True))
 
+    # Secondary characters by name (from registry)
+    known = {n.lower() for n in (other_name, player_name, "you") if n}
+    for sc_name, sc_gender in secondary_characters.items():
+        if sc_name in known:
+            continue
+        # Use the original casing for the regex (capitalize first letter)
+        display_name = sc_name.capitalize()
+        for m in re.finditer(rf'\b{re.escape(display_name)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            speaker = "secondary_male" if sc_gender == "male" else "secondary_female"
+            candidates.append((m.start(), speaker, True))
+
+    # Also catch any capitalized name + speech verb not in our registry
+    for m in _NAMED_ATTR_RE.finditer(narr):
+        name_lower = m.group(1).lower()
+        if name_lower in known:
+            continue
+        if name_lower in secondary_characters:
+            # Already handled above with correct gender
+            continue
+        # Unknown secondary character — infer gender from pronouns in full narr
+        # context that explicitly reference this name (look for "Name... she/he")
+        has_she = bool(re.search(rf'\b{re.escape(m.group(1))}\b[^.!?]{{0,60}}\bshe\b', narr, re.IGNORECASE))
+        has_he = bool(re.search(rf'\b{re.escape(m.group(1))}\b[^.!?]{{0,60}}\bhe\b', narr, re.IGNORECASE))
+        if has_she and not has_he:
+            candidates.append((m.start(), "secondary_female", True))
+        elif has_he and not has_she:
+            candidates.append((m.start(), "secondary_male", True))
+        elif other_pronoun == "she":
+            candidates.append((m.start(), "secondary_male", True))
+        else:
+            candidates.append((m.start(), "secondary_female", True))
+
+    # Pronoun-based attribution (weaker signal — only used when no name match exists)
     # Primary NPC by pronoun: "she said" / "he said"
     if other_pronoun:
         for m in re.finditer(rf'\b{re.escape(other_pronoun)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-            candidates.append((m.start(), "other"))
-
-    # Secondary characters: any other capitalised name with a speech verb
-    known = {n.lower() for n in (other_name, player_name, "you") if n}
-    for m in _NAMED_ATTR_RE.finditer(narr):
-        if m.group(1).lower() not in known:
-            # Infer gender from pronouns near this name only (±40 chars),
-            # so a female primary NPC's "she" doesn't bleed into unrelated names.
-            start = max(0, m.start() - 40)
-            end = min(len(narr), m.end() + 40)
-            local = narr[start:end]
-            has_she = bool(re.search(r'\bshe\b', local, re.IGNORECASE))
-            has_he = bool(re.search(r'\bhe\b', local, re.IGNORECASE))
-            if has_she and not has_he:
-                candidates.append((m.start(), "secondary_female"))
-            elif has_he and not has_she:
-                candidates.append((m.start(), "secondary_male"))
-            elif other_pronoun == "she":
-                # Primary NPC is female; default secondary to male to avoid confusion
-                candidates.append((m.start(), "secondary_male"))
-            else:
-                candidates.append((m.start(), "secondary_female"))
+            candidates.append((m.start(), "other", False))
 
     # Opposite-gender pronoun (cannot be the primary NPC)
     if other_pronoun == "she":
         for m in re.finditer(rf'\bhe\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-            candidates.append((m.start(), "secondary_male"))
+            candidates.append((m.start(), "secondary_male", False))
     elif other_pronoun == "he":
         for m in re.finditer(rf'\bshe\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
-            candidates.append((m.start(), "secondary_female"))
+            candidates.append((m.start(), "secondary_female", False))
 
     if candidates:
-        candidates.sort(key=lambda x: x[0])
+        # Sort by position, but prefer name-based matches over pronoun matches
+        # at similar positions (within 5 chars of each other)
+        candidates.sort(key=lambda x: (x[0], not x[2]))
         return candidates[0][1]
 
     return "other"  # default to primary NPC
@@ -163,11 +202,21 @@ def _parse_segments(
     player_pronoun: str = "you",
     other_name: str = "",
     other_pronoun: str = "she",
+    secondary_characters: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """
     Split narrator text into (segment, speaker) tuples.
     speaker: "narrator" | "other" | "player" | "secondary_male" | "secondary_female"
     Also strips *action* markers so they're read naturally.
+
+    secondary_characters: dict mapping lowercase name → gender ("male"/"female")
+
+    Attribution priority:
+    1. Post-attribution (text after the closing quote up to the next sentence end)
+       — this is the dominant English pattern: "Hello," she said.
+    2. Tight pre-attribution (only the final clause before the quote, after the
+       last sentence-ending punctuation) — catches: She whispered, "Hello."
+    3. Default to "other" (primary NPC) if neither matches.
     """
     clean = re.sub(r"\*([^*\n]+)\*", r"\1", text)
     clean = re.sub(r"<[^>]+>", "", clean)
@@ -179,22 +228,39 @@ def _parse_segments(
         narr = clean[last:m.start()].strip()
         if narr:
             segments.append((narr, "narrator"))
-        # Pre-attribution: last ≤80 chars before the opening quote.
-        # Captures "She whispered, [quote]" lead-ins without reaching back
-        # into the previous quote's own attribution tag.
-        pre_narr = narr[-80:].strip() if narr else ""
 
-        # Post-attribution: text after the closing quote, but only up to the
-        # first sentence-ending punctuation (.!?) — this catches the dominant
-        # pattern '"Hello," she said.' without crossing into the next sentence
-        # where the OTHER character might be described with a speech verb
-        # ("You answered with a nod.").
+        # Post-attribution: text after the closing quote, up to first sentence end.
+        # This is the most reliable signal — "Hello," she said.
         post_raw = clean[m.end():m.end() + 120]
         sent_end = re.search(r'[.!?]', post_raw)
         post_narr = post_raw[:sent_end.end()].strip() if sent_end else post_raw.strip()
 
-        combined_narr = (pre_narr + " " + post_narr).strip()
-        speaker = _detect_speaker(combined_narr, player_name, other_name, other_pronoun)
+        # Try post-attribution first (most reliable)
+        speaker = _detect_speaker(post_narr, player_name, other_name, other_pronoun,
+                                  secondary_characters)
+
+        # If post-attribution found nothing, try tight pre-attribution:
+        # Only the final clause of the narration before the quote (after the last
+        # sentence-ending punctuation). This prevents "She said something. You flinched."
+        # from bleeding "She said" into the next quote's attribution.
+        if speaker == "other" and narr:
+            # Find the last sentence boundary in pre-narration
+            last_sent_end = None
+            for sent_m in re.finditer(r'[.!?]\s+', narr):
+                last_sent_end = sent_m.end()
+            # Take only the final clause (text after last sentence boundary)
+            if last_sent_end is not None:
+                pre_clause = narr[last_sent_end:].strip()
+            else:
+                # No sentence boundary — use last 60 chars (tighter than before)
+                pre_clause = narr[-60:].strip()
+            if pre_clause:
+                pre_speaker = _detect_speaker(pre_clause, player_name, other_name,
+                                             other_pronoun, secondary_characters)
+                if pre_speaker != "other":
+                    # Only override default if pre-attribution found something specific
+                    speaker = pre_speaker
+
         segments.append((m.group(), speaker))
         last = m.end()
     tail = clean[last:].strip()
@@ -217,6 +283,7 @@ session = {
     "player_lang":    PRIMARY_MALE_CHARACTER_LANG,
     "player_name":    None,
     "player_pronoun": None,
+    "secondary_characters": {},
 }
 
 
@@ -317,6 +384,14 @@ def start():
 
     system_prompt = build_system_prompt(profile, story_context)
 
+    # Build secondary character registry: {name_lower: gender}
+    secondary_characters = {}
+    for sc in profile.get("secondary_characters", []):
+        name = sc.get("name", "").strip()
+        gender = sc.get("gender", "").lower()
+        if name and gender in ("male", "female"):
+            secondary_characters[name.lower()] = gender
+
     print("\n" + "═" * 60)
     print(f"  STORY : {chosen.name}")
     print("═" * 60)
@@ -327,6 +402,11 @@ def start():
     print(f"  Player [{player_gender:6}] {profile['player_name']:20} → {player_voice} ({player_lang})")
     print(f"  2nd ♂  [male  ] secondary male         → {SECONDARY_MALE_CHARACTER_VOICE} ({SECONDARY_MALE_CHARACTER_LANG})")
     print(f"  2nd ♀  [female] secondary female        → {SECONDARY_FEMALE_CHARACTER_VOICE} ({SECONDARY_FEMALE_CHARACTER_LANG})")
+    if secondary_characters:
+        print("  ─── Secondary character registry ───")
+        for sc_name, sc_gender in secondary_characters.items():
+            voice = SECONDARY_MALE_CHARACTER_VOICE if sc_gender == "male" else SECONDARY_FEMALE_CHARACTER_VOICE
+            print(f"    {sc_name.capitalize():20} [{sc_gender:6}] → {voice}")
     print("═" * 60 + "\n")
 
     session["model"]          = model
@@ -340,6 +420,7 @@ def start():
     session["player_lang"]    = player_lang
     session["player_name"]    = profile["player_name"]
     session["player_pronoun"] = player_pronoun
+    session["secondary_characters"] = secondary_characters
 
     return {
         "name":        profile["other_name"],
@@ -440,6 +521,7 @@ def tts():
             player_pronoun=session["player_pronoun"] or "you",
             other_name=session["other_name"] or "",
             other_pronoun=session["other_pronoun"] or "she",
+            secondary_characters=session.get("secondary_characters", {}),
         )
 
         SR = 24000

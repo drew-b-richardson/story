@@ -117,6 +117,7 @@ def analyze_story(story_text: str, model: str) -> dict:
                 "- setting: where/when the story takes place\n"
                 "- relationship_stage: where they are at the start (strangers, friends, dating, etc)\n"
                 "- story_summary: 3-4 sentence summary of the story arc\n"
+                "- secondary_characters: array of objects for any other named characters (not the two leads), each with 'name' and 'gender' ('male' or 'female'). If none, use an empty array.\n"
                 "- story_beats: array of 5-8 key emotional situations or turning points from the story, "
                 "described as situations to encounter (not outcomes) — e.g. 'they are alone together for the first time and tension builds' not 'they kiss'\n"
                 "- appearance: detailed physical description of other_name — height, build, face shape, skin tone, age\n"

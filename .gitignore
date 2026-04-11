@@ -1,4 +1,5 @@
 stories/
+story_summaries/
 __pycache__/
 .venv/
 *.pyc

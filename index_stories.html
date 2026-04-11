@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Story Indexer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        h1 {
+            color: #1e3c72;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .story-list {
+            margin-bottom: 30px;
+        }
+        .story-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            border-left: 4px solid #2a5298;
+        }
+        .story-item.analyzed {
+            border-left-color: #4caf50;
+            background: #f1f8e9;
+        }
+        .story-name {
+            flex: 1;
+            font-size: 14px;
+            color: #333;
+            font-family: monospace;
+        }
+        .status {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: #e3f2fd;
+            color: #1976d2;
+            min-width: 70px;
+            text-align: center;
+        }
+        .status.analyzing {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        .status.done {
+            background: #e8f5e9;
+            color: #388e3c;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-analyze {
+            background: #2a5298;
+            color: white;
+        }
+        .btn-analyze:hover:not(:disabled) {
+            background: #1e3c72;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(42, 82, 152, 0.3);
+        }
+        .btn-analyze:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-back {
+            background: #f5f5f5;
+            color: #333;
+            margin-right: 10px;
+        }
+        .btn-back:hover {
+            background: #e0e0e0;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .loading {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #2a5298;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 4px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        .empty-state p {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        .error-message {
+            background: #ffebee;
+            color: #d32f2f;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📖 Story Indexer</h1>
+        <p class="subtitle">Analyze stories and create character/story summaries</p>
+
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+        <div id="loading" style="text-align: center; padding: 40px; display: none;">
+            <div class="loading"></div>
+            <p>Loading stories...</p>
+        </div>
+
+        <div id="content" style="display: none;">
+            <div class="story-list" id="storyList">
+                <!-- Stories will be loaded here -->
+            </div>
+            <div id="emptyState" class="empty-state" style="display: none;">
+                <p>No stories found in the stories/ directory</p>
+                <p style="font-size: 12px; color: #ccc;">Add .txt files to continue</p>
+            </div>
+        </div>
+
+        <div class="actions">
+            <a href="/" style="text-decoration: none;">
+                <button class="btn-back">← Back to Game</button>
+            </a>
+            <button onclick="location.reload()" class="btn-back">↻ Refresh</button>
+        </div>
+    </div>
+
+    <script>
+        async function loadStories() {
+            document.getElementById('loading').style.display = 'block';
+            try {
+                const res = await fetch('/stories');
+                const data = await res.json();
+                const stories = data.stories || [];
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+
+                if (stories.length === 0) {
+                    document.getElementById('emptyState').style.display = 'block';
+                    return;
+                }
+
+                const list = document.getElementById('storyList');
+                list.innerHTML = '';
+
+                for (const story of stories) {
+                    const storyName = story.replace('.txt', '');
+                    const item = document.createElement('div');
+                    item.className = 'story-item';
+                    item.id = `story-${storyName}`;
+
+                    // Check if already analyzed
+                    const hasAnalysis = await checkIfAnalyzed(storyName);
+                    if (hasAnalysis) {
+                        item.classList.add('analyzed');
+                    }
+
+                    item.innerHTML = `
+                        <div class="story-name">${storyName}</div>
+                        <div class="status" id="status-${storyName}">
+                            ${hasAnalysis ? '✓ Done' : 'Ready'}
+                        </div>
+                        <button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">
+                            Analyze
+                        </button>
+                    `;
+                    list.appendChild(item);
+                }
+            } catch (err) {
+                document.getElementById('loading').style.display = 'none';
+                showError('Failed to load stories: ' + err.message);
+            }
+        }
+
+        async function checkIfAnalyzed(storyName) {
+            try {
+                const res = await fetch(`/check-analysis/${storyName}`);
+                const data = await res.json();
+                return data.analyzed;
+            } catch {
+                return false;
+            }
+        }
+
+        async function analyzeStory(storyName) {
+            const btn = document.getElementById(`btn-${storyName}`);
+            const status = document.getElementById(`status-${storyName}`);
+            const item = document.getElementById(`story-${storyName}`);
+
+            btn.disabled = true;
+            status.className = 'status analyzing';
+            status.innerHTML = '<span class="loading" style="margin-right: 4px;"></span>Analyzing...';
+
+            try {
+                const res = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ story: storyName })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.error || 'Analysis failed');
+                }
+
+                status.className = 'status done';
+                status.innerHTML = '✓ Done';
+                item.classList.add('analyzed');
+                btn.disabled = false;
+                btn.textContent = 'Re-analyze';
+            } catch (err) {
+                status.className = 'status error';
+                status.innerHTML = 'Error';
+                btn.disabled = false;
+                showError(`Failed to analyze ${storyName}: ${err.message}`);
+                console.error(err);
+            }
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        // Load on page load
+        loadStories();
+    </script>
+</body>
+</html>

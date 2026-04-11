@@ -160,6 +160,117 @@ def analyze_story(story_text: str, model: str) -> dict:
     return profile, story_context
 
 
+def _parse_json(raw: str) -> dict | list | None:
+    """Strip markdown fences and parse JSON. Returns None on failure."""
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    try:
+        return json.loads(cleaned.strip())
+    except json.JSONDecodeError:
+        return None
+
+
+def enrich_character_profile(profile: dict, story_context: str, model: str) -> dict:
+    """
+    Two focused enrichment calls run after the main analysis:
+      Pass A — player + NPC details (physical, loves, hates)
+      Pass B — one call per secondary character with full physical/personality details
+    All missing values are invented; never leaves fields empty.
+    """
+    player_name  = profile.get("player_name", "the player character")
+    player_gender = profile.get("player_gender", "male")
+    other_name   = profile.get("other_name", "the NPC")
+    other_gender  = profile.get("other_gender", "female")
+    ctx = story_context[:3000]
+
+    # ── Pass A: primary characters ────────────────────────────
+    raw_a = ollama_chat(model, [{
+        "role": "user",
+        "content": (
+            f"Story context: {ctx}\n\n"
+            f"Provide detailed character information for the two leads. "
+            f"Pull from the story where possible. For anything not in the story, "
+            f"INVENT vivid, specific details — never use vague placeholders.\n\n"
+            f"Return ONLY a JSON object with these exact fields:\n"
+            f"- player_appearance: height, build, face shape, skin tone, age of {player_name}\n"
+            f"- player_hair: color, length, texture, style of {player_name}\n"
+            f"- player_eyes: color, shape, notable quality of {player_name}\n"
+            f"- player_scent: characteristic scent or cologne of {player_name}\n"
+            f"- player_clothing_style: how {player_name} typically dresses\n"
+            f"- player_personality: array of 4-5 traits for {player_name}\n"
+            f"- player_desires: what {player_name} wants and fears emotionally\n"
+            f"- player_loves: array of 5 things {player_name} loves — use story moments first, "
+            f"then invent sensory specifics (e.g. 'the sound of rain against a window')\n"
+            f"- player_hates: array of 4 things {player_name} dislikes — from story or invented\n"
+            f"- other_loves: array of 5 things {other_name} loves — story moments first, "
+            f"then invent (e.g. 'fingers tracing the back of a hand')\n"
+            f"- other_hates: array of 4 things {other_name} dislikes — from story or invented\n"
+        ),
+    }], stream=False)
+
+    enrichment = _parse_json(raw_a)
+    if enrichment and isinstance(enrichment, dict):
+        for key in (
+            "player_appearance", "player_hair", "player_eyes", "player_scent",
+            "player_clothing_style", "player_personality", "player_desires",
+            "player_loves", "player_hates", "other_loves", "other_hates",
+        ):
+            if enrichment.get(key):
+                profile[key] = enrichment[key]
+    else:
+        print("[Warning: Pass A enrichment JSON parse failed]")
+
+    # ── Pass B: secondary characters (one call, focused prompt) ──
+    secondary = profile.get("secondary_characters", [])
+    if secondary:
+        names_block = "\n".join(
+            f"- {sc.get('name', '?')} ({sc.get('gender', 'unknown')})"
+            for sc in secondary
+        )
+        raw_b = ollama_chat(model, [{
+            "role": "user",
+            "content": (
+                f"Story context: {ctx}\n\n"
+                f"Create full character profiles for these secondary characters.\n"
+                f"Use story details where available. Where the story is silent, "
+                f"INVENT attractive, vivid, specific details — never say 'not mentioned'.\n\n"
+                f"Characters:\n{names_block}\n\n"
+                f"Return ONLY a JSON array. Each element must have ALL of these fields:\n"
+                f"  name, gender,\n"
+                f"  appearance (height, build, face, skin, age — make them striking if inventing),\n"
+                f"  hair (color, length, texture, style — vivid specifics),\n"
+                f"  eyes (color, shape, notable quality),\n"
+                f"  scent (characteristic scent — alluring if inventing),\n"
+                f"  clothing_style (how they dress — stylish if inventing),\n"
+                f"  personality (array of 3-4 traits — charismatic/intriguing if inventing),\n"
+                f"  loves (array of 3 specific things),\n"
+                f"  hates (array of 2 specific things)\n"
+            ),
+        }], stream=False)
+
+        enriched_list = _parse_json(raw_b)
+        # Handle LLMs that wrap the array in an object
+        if isinstance(enriched_list, dict):
+            for val in enriched_list.values():
+                if isinstance(val, list):
+                    enriched_list = val
+                    break
+        if isinstance(enriched_list, list):
+            by_name = {item.get("name", "").lower(): item for item in enriched_list}
+            profile["secondary_characters"] = [
+                {**sc, **by_name[sc.get("name", "").lower()]}
+                if sc.get("name", "").lower() in by_name else sc
+                for sc in secondary
+            ]
+        else:
+            print("[Warning: Pass B secondary character enrichment failed]")
+
+    return profile
+
+
 def build_system_prompt(profile: dict, story_context: str) -> str:
     other_name = profile.get("other_name", "Sarah")
     player_name = profile.get("player_name", "Alex")

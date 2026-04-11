@@ -16,9 +16,10 @@ import urllib.error
 from pathlib import Path
 from flask import Flask, request, Response, send_file, stream_with_context
 
-from story import analyze_story, build_system_prompt, list_models, OLLAMA_URL
+from story import analyze_story, enrich_character_profile, build_system_prompt, list_models, OLLAMA_URL
 
 STORIES_DIR = Path(__file__).parent / "stories"
+SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
 KOKORO_MODEL = Path(__file__).parent / "kokoro_models" / "kokoro-v1.0.onnx"
 KOKORO_VOICES = Path(__file__).parent / "kokoro_models" / "voices-v1.0.bin"
 
@@ -196,6 +197,161 @@ def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun:
     return "other"  # default to primary NPC
 
 
+def _character_section(role_label: str, name: str, data: dict) -> str:
+    """Build a single character section for character.md."""
+    def bullet_list(items) -> str:
+        if isinstance(items, list) and items:
+            return "\n".join(f"- {i}" for i in items)
+        return "_Not specified_"
+
+    def field(val, fallback="_Not specified_") -> str:
+        return val if val and str(val).strip() else fallback
+
+    traits = data.get("personality", [])
+    traits_str = ", ".join(traits) if traits else "_Not specified_"
+
+    return f"""# {role_label}: {name}
+
+## Appearance
+{field(data.get('appearance'))}
+
+### Hair
+{field(data.get('hair'))}
+
+### Eyes
+{field(data.get('eyes'))}
+
+### Scent
+{field(data.get('scent'))}
+
+### Style
+{field(data.get('clothing_style'))}
+
+## Personality
+{traits_str}
+
+## What They Love
+{bullet_list(data.get('loves'))}
+
+## What They Hate
+{bullet_list(data.get('hates'))}
+
+## Desires & Fears
+{field(data.get('desires'))}
+"""
+
+
+def _profile_to_markdown(profile: dict) -> str:
+    """Convert an analyzed profile dict to role-labeled character sections."""
+    player_name   = profile.get("player_name", "Player")
+    player_gender = profile.get("player_gender", "male").lower()
+    other_name    = profile.get("other_name", "Unknown")
+    other_gender  = profile.get("other_gender", "female").lower()
+
+    player_role = "PRIMARY_MALE"   if player_gender == "male" else "PRIMARY_FEMALE"
+    other_role  = "PRIMARY_MALE"   if other_gender  == "male" else "PRIMARY_FEMALE"
+
+    # Build player data dict from player_ prefixed fields
+    player_data = {
+        "appearance":     profile.get("player_appearance"),
+        "hair":           profile.get("player_hair"),
+        "eyes":           profile.get("player_eyes"),
+        "scent":          profile.get("player_scent"),
+        "clothing_style": profile.get("player_clothing_style"),
+        "personality":    profile.get("player_personality", []),
+        "loves":          profile.get("player_loves", []),
+        "hates":          profile.get("player_hates", []),
+        "desires":        profile.get("player_desires"),
+    }
+
+    # Build other_name data dict from top-level fields
+    other_data = {
+        "appearance":     profile.get("appearance"),
+        "hair":           profile.get("hair"),
+        "eyes":           profile.get("eyes"),
+        "scent":          profile.get("scent"),
+        "clothing_style": profile.get("clothing_style"),
+        "personality":    profile.get("personality", []),
+        "loves":          profile.get("other_loves", []),
+        "hates":          profile.get("other_hates", []),
+        "desires":        profile.get("desires"),
+    }
+
+    sections = [
+        _character_section(player_role, player_name, player_data),
+        _character_section(other_role, other_name, other_data),
+    ]
+
+    # Add a speech/affection block to the NPC section
+    speech_block = ""
+    if profile.get("speech_style"):
+        speech_block += f"\n## How They Speak\n{profile['speech_style']}\n"
+    if profile.get("affection_style"):
+        speech_block += f"\n## How They Show Affection\n{profile['affection_style']}\n"
+    behaviors = profile.get("key_behaviors", [])
+    if behaviors:
+        speech_block += "\n## Key Behaviors\n" + "\n".join(f"- {b}" for b in behaviors) + "\n"
+    if profile.get("dealbreakers"):
+        speech_block += f"\n## What Pushes Them Away\n{profile['dealbreakers']}\n"
+    if speech_block:
+        sections[1] = sections[1].rstrip() + "\n" + speech_block
+
+    # Secondary characters
+    for sc in profile.get("secondary_characters", []):
+        sc_name   = sc.get("name", "Unknown")
+        sc_gender = sc.get("gender", "unknown").lower()
+        sc_role   = "SECONDARY_MALE" if sc_gender == "male" else "SECONDARY_FEMALE"
+        sc_data   = {
+            "appearance":  sc.get("appearance"),
+            "hair":        sc.get("hair"),
+            "eyes":        sc.get("eyes"),
+            "scent":       sc.get("scent"),
+            "clothing_style": sc.get("clothing_style"),
+            "personality": sc.get("personality", []),
+            "loves":       sc.get("loves", []),
+            "hates":       sc.get("hates", []),
+            "desires":     sc.get("desires"),
+        }
+        sections.append(_character_section(sc_role, sc_name, sc_data))
+
+    return "\n\n---\n\n".join(sections)
+
+
+def _profile_to_story_markdown(profile: dict) -> str:
+    """Build story.md from profile fields using role labels instead of character names."""
+    player_gender = profile.get("player_gender", "male").lower()
+    other_gender  = profile.get("other_gender", "female").lower()
+    player_role   = "PRIMARY_MALE" if player_gender == "male" else "PRIMARY_FEMALE"
+    other_role    = "PRIMARY_MALE" if other_gender  == "male" else "PRIMARY_FEMALE"
+
+    # Replace character names with role labels in the summary text
+    summary = profile.get("story_summary", "_Not provided_")
+    player_name = profile.get("player_name", "")
+    other_name  = profile.get("other_name", "")
+    if player_name:
+        summary = re.sub(rf'\b{re.escape(player_name)}\b', player_role, summary)
+    if other_name:
+        summary = re.sub(rf'\b{re.escape(other_name)}\b', other_role, summary)
+
+    beats = profile.get("story_beats", [])
+    beats_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(beats)) if beats else "_None provided_"
+
+    return f"""# Story
+
+## Setting
+{profile.get('setting', '_Not provided_')}
+
+## Starting Point
+{profile.get('relationship_stage', '_Not provided_')}
+
+## Summary
+{summary}
+
+## Story Beats
+{beats_text}
+"""
+
+
 def _parse_segments(
     text: str,
     player_name: str = "",
@@ -292,6 +448,11 @@ def index():
     return send_file("index.html")
 
 
+@app.route("/index_stories")
+def index_stories():
+    return send_file("index_stories.html")
+
+
 @app.route("/models")
 def models():
     return {"models": list_models()}
@@ -301,6 +462,73 @@ def models():
 def stories():
     files = sorted(p.name for p in STORIES_DIR.glob("*.txt"))
     return {"stories": files}
+
+
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    """Analyze a story and save character + story summaries as .md files."""
+    data = request.json or {}
+    story_name = data.get("story", "").strip()
+
+    if not story_name:
+        return {"error": "No story name provided"}, 400
+
+    # Sanitize path to prevent directory traversal
+    story_file = STORIES_DIR / f"{story_name}.txt"
+    try:
+        story_file = story_file.resolve()
+        story_file.relative_to(STORIES_DIR.resolve())
+    except (ValueError, RuntimeError):
+        return {"error": "Invalid story path"}, 400
+
+    if not story_file.exists():
+        return {"error": f"Story not found: {story_name}.txt"}, 404
+
+    try:
+        # Create summaries directory if needed
+        SUMMARIES_DIR.mkdir(exist_ok=True)
+
+        # Read and analyze story
+        story_text = story_file.read_text(encoding="utf-8", errors="replace")
+        model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
+
+        profile, story_context = analyze_story(story_text, model)
+
+        # Second pass: fill in physical descriptions, loves/hates, secondary details
+        profile = enrich_character_profile(profile, story_context, model)
+
+        # Save character summary as markdown
+        char_md = _profile_to_markdown(profile)
+        char_file = SUMMARIES_DIR / f"{story_name}_character.md"
+        char_file.write_text(char_md, encoding="utf-8")
+
+        # Build story.md from profile fields using role names (not character names)
+        story_md = _profile_to_story_markdown(profile)
+        story_file_md = SUMMARIES_DIR / f"{story_name}_story.md"
+        story_file_md.write_text(story_md, encoding="utf-8")
+
+        # Save enriched profile as JSON (for game use)
+        profile_file = SUMMARIES_DIR / f"{story_name}_profile.json"
+        profile_file.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        return {
+            "success": True,
+            "story": story_name,
+            "character": profile.get("other_name", "Unknown"),
+        }
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}, 500
+
+
+@app.route("/check-analysis/<story_name>")
+def check_analysis(story_name):
+    """Check if a story has been analyzed (summaries exist)."""
+    try:
+        story_name = story_name.strip()
+        char_file = SUMMARIES_DIR / f"{story_name}_character.md"
+        return {"analyzed": char_file.exists()}
+    except Exception:
+        return {"analyzed": False}
 
 
 @app.route("/start", methods=["POST"])
@@ -314,7 +542,9 @@ def start():
 
     story_pick = data.get("story", "random")
     if story_pick and story_pick != "random":
-        chosen = (STORIES_DIR / story_pick).resolve()
+        # Remove .txt extension if included
+        story_name = story_pick.replace(".txt", "")
+        chosen = (STORIES_DIR / f"{story_name}.txt").resolve()
         try:
             chosen.relative_to(STORIES_DIR.resolve())
         except ValueError:
@@ -323,11 +553,22 @@ def start():
             return {"error": f"Story not found: {story_pick}"}, 400
     else:
         chosen = random.choice(all_stories)
+        story_name = chosen.stem
 
-    story_text = chosen.read_text(encoding="utf-8", errors="replace")
+    # Check if summaries exist for this story
+    char_file = SUMMARIES_DIR / f"{story_name}_character.md"
+    profile_file = SUMMARIES_DIR / f"{story_name}_profile.json"
+    story_md_file = SUMMARIES_DIR / f"{story_name}_story.md"
 
     try:
-        profile, story_context = analyze_story(story_text, model)
+        if profile_file.exists() and story_md_file.exists():
+            # Load from saved summaries
+            profile = json.loads(profile_file.read_text(encoding="utf-8"))
+            story_context = story_md_file.read_text(encoding="utf-8")
+        else:
+            # Analyze fresh
+            story_text = chosen.read_text(encoding="utf-8", errors="replace")
+            profile, story_context = analyze_story(story_text, model)
     except Exception as e:
         return {"error": str(e)}, 500
 

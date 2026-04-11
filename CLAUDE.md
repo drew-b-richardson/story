@@ -23,6 +23,23 @@ pip install flask kokoro-onnx numpy onnxruntime
 
 Kokoro model files (`kokoro-v1.0.onnx`, `voices-v1.0.bin`) live in `kokoro_models/` (gitignored). Story `.txt` files live in `stories/` (gitignored).
 
+## Story Indexing & Summaries
+
+Stories are analyzed once and cached as markdown summaries to avoid re-running the expensive LLM analysis on every game start.
+
+**Workflow:**
+1. Open http://localhost:5000/index_stories in your browser
+2. Select a story from the dropdown and click "Analyze"
+3. The app calls Ollama to extract character profiles and story context
+4. Results are saved as three files in `story_summaries/`:
+   - `{story}_character.md` — structured character summary (appearance, personality, behaviors, etc.)
+   - `{story}_story.md` — story context and summary text
+   - `{story}_profile.json` — raw profile JSON for reference
+
+**Re-indexing:** Click "Analyze" again to re-analyze a story and update its summaries.
+
+**At game start:** When you pick a story, the app loads from the cached `.md` files. If summaries don't exist yet, it will analyze the `.txt` file fresh and save summaries automatically.
+
 ## Architecture
 
 The app has two entry points that share `story.py`:

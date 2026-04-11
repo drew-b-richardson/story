@@ -27,15 +27,15 @@ NARRATOR_VOICE = "bf_emma"
 NARRATOR_LANG  = "en-gb"
 
 # Primary character voices (main NPC and player)
-PRIMARY_MALE_CHARACTER_VOICE   = "am_michael"
-PRIMARY_MALE_CHARACTER_LANG    = "en-us"
-PRIMARY_FEMALE_CHARACTER_VOICE = "af_heart"
-PRIMARY_FEMALE_CHARACTER_LANG  = "en-us"
+PRIMARY_MALE_CHARACTER_VOICE   = "bm_daniel"
+PRIMARY_MALE_CHARACTER_LANG    = "en-gb"
+PRIMARY_FEMALE_CHARACTER_VOICE = "bf_isabella"
+PRIMARY_FEMALE_CHARACTER_LANG  = "en-gb"
 
 # Secondary character voices (side characters who enter the scene)
-SECONDARY_MALE_CHARACTER_VOICE   = "bm_fable"
-SECONDARY_MALE_CHARACTER_LANG    = "en-gb"
-SECONDARY_FEMALE_CHARACTER_VOICE = "af_bella"
+SECONDARY_MALE_CHARACTER_VOICE   = "am_onyx"
+SECONDARY_MALE_CHARACTER_LANG    = "en-us"
+SECONDARY_FEMALE_CHARACTER_VOICE = "af_nicole"
 SECONDARY_FEMALE_CHARACTER_LANG  = "en-us"
 
 app = Flask(__name__)
@@ -208,7 +208,7 @@ def _parse_segments(
 session = {
     "messages":       [],
     "profile":        None,
-    "model":          "romance:latest",
+    "model":          "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M",
     "other_voice":    PRIMARY_FEMALE_CHARACTER_VOICE,
     "other_lang":     PRIMARY_FEMALE_CHARACTER_LANG,
     "other_name":     None,
@@ -239,7 +239,7 @@ def stories():
 @app.route("/start", methods=["POST"])
 def start():
     data = request.json
-    model = data.get("model", "romance:latest")
+    model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
     all_stories = list(STORIES_DIR.glob("*.txt"))
     if not all_stories:
@@ -266,6 +266,20 @@ def start():
 
     _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Nora", "Rose", "Sarah", "Vera"]
     _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
+
+    # If the user requested a specific gender, swap player/other roles when needed.
+    preferred_gender = data.get("player_gender", "auto").lower()
+    if preferred_gender in ("male", "female"):
+        assigned_player_gender = profile.get("player_gender", "male").lower()
+        if assigned_player_gender != preferred_gender:
+            # Swap all player ↔ other fields so the user plays the right character.
+            for key_pair in [("player_name", "other_name"),
+                             ("player_gender", "other_gender")]:
+                pk, ok = key_pair
+                profile[pk], profile[ok] = profile.get(ok, ""), profile.get(pk, "")
+            # Swap any appearance/personality fields that are character-specific.
+            # The LLM always describes "other", so after a swap those fields now
+            # describe the new "other" — which is correct; no extra work needed.
 
     other_gender  = profile.get("other_gender", "female").lower()
     player_gender = profile.get("player_gender", "male").lower()
@@ -459,6 +473,40 @@ def tts():
         return Response(wav_bytes, mimetype="audio/wav",
                         headers={"Cache-Control": "no-cache"})
 
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.route("/kokoro_test")
+def kokoro_test():
+    return send_file("kokoro_test.html")
+
+
+@app.route("/tts_preview", methods=["POST"])
+def tts_preview():
+    """Render a short sample monologue in a specific Kokoro voice."""
+    data = request.json or {}
+    voice = data.get("voice", "").strip()
+    lang  = data.get("lang", "en-us").strip()
+    if not voice:
+        return {"error": "No voice specified"}, 400
+
+    sample = (
+        "Good evening. I hope you don't mind me saying — you have the most "
+        "extraordinary way of making an ordinary room feel entirely different. "
+        "I've been watching you from across the hall, trying to work up the nerve "
+        "to introduce myself. My name is… well, that hardly matters yet, does it? "
+        "What matters is that I have a feeling this conversation is going to be "
+        "one I remember for a very long time."
+    )
+
+    try:
+        import numpy as np
+        kokoro = get_kokoro()
+        samples, _ = kokoro.create(sample, voice=voice, speed=1.0, lang=lang)
+        wav_bytes = _float32_to_wav(samples, 24000)
+        return Response(wav_bytes, mimetype="audio/wav",
+                        headers={"Cache-Control": "no-cache"})
     except Exception as e:
         return {"error": str(e)}, 500
 

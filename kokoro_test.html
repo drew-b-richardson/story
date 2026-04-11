@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kokoro Voice Sampler</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f0d0e;
+    --surface: #1a1618;
+    --surface2: #221e20;
+    --border: #2e2628;
+    --accent: #c8748a;
+    --accent2: #e8a0b0;
+    --text: #e8dfe2;
+    --muted: #7a6b70;
+    --radius: 12px;
+  }
+
+  body {
+    font-family: 'Georgia', serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    padding: 2rem 1rem 4rem;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.8rem;
+    font-weight: normal;
+    color: var(--accent2);
+    letter-spacing: 0.05em;
+    margin-bottom: 0.4rem;
+  }
+
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.9rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .section {
+    max-width: 640px;
+    margin: 0 auto 2.5rem;
+  }
+
+  .section-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .voice-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .voice-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.65rem 1rem;
+    transition: border-color 0.15s;
+  }
+
+  .voice-row:has(.play-btn:hover) {
+    border-color: var(--accent);
+  }
+
+  .voice-id {
+    font-family: 'Courier New', monospace;
+    font-size: 0.92rem;
+    color: var(--accent2);
+    flex: 1;
+  }
+
+  .voice-desc {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-style: italic;
+    flex: 1;
+    text-align: right;
+  }
+
+  .play-btn {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.82rem;
+    padding: 0.35rem 0.85rem;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+
+  .play-btn:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .play-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .play-btn.playing {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .play-btn.error {
+    border-color: #a04050;
+    color: #c07080;
+  }
+
+  .monologue-box {
+    max-width: 640px;
+    margin: 0 auto 2.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem;
+    font-size: 0.88rem;
+    color: var(--muted);
+    font-style: italic;
+    line-height: 1.7;
+  }
+
+  .monologue-box strong {
+    display: block;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    font-style: normal;
+    margin-bottom: 0.5rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Kokoro Voice Sampler</h1>
+<p class="subtitle">Native English voices — click to hear a sample monologue</p>
+
+<div class="monologue-box">
+  <strong>Sample text</strong>
+  Good evening. I hope you don't mind me saying — you have the most extraordinary
+  way of making an ordinary room feel entirely different. I've been watching you
+  from across the hall, trying to work up the nerve to introduce myself.
+  My name is… well, that hardly matters yet, does it? What matters is that I have
+  a feeling this conversation is going to be one I remember for a very long time.
+</div>
+
+<div class="section">
+  <div class="section-title">American Female (en-us)</div>
+  <div class="voice-grid" id="af-grid"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">American Male (en-us)</div>
+  <div class="voice-grid" id="am-grid"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">British Female (en-gb)</div>
+  <div class="voice-grid" id="bf-grid"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">British Male (en-gb)</div>
+  <div class="voice-grid" id="bm-grid"></div>
+</div>
+
+<script>
+const VOICES = [
+  // American Female
+  { id: "af_aoede",   lang: "en-us", group: "af" },
+  { id: "af_bella",   lang: "en-us", group: "af" },
+  { id: "af_heart",   lang: "en-us", group: "af" },
+  { id: "af_jessica", lang: "en-us", group: "af" },
+  { id: "af_kore",    lang: "en-us", group: "af" },
+  { id: "af_nicole",  lang: "en-us", group: "af" },
+  { id: "af_nova",    lang: "en-us", group: "af" },
+  { id: "af_river",   lang: "en-us", group: "af" },
+  { id: "af_sarah",   lang: "en-us", group: "af" },
+  { id: "af_sky",     lang: "en-us", group: "af" },
+
+  // American Male
+  { id: "am_adam",    lang: "en-us", group: "am" },
+  { id: "am_echo",    lang: "en-us", group: "am" },
+  { id: "am_eric",    lang: "en-us", group: "am" },
+  { id: "am_fenrir",  lang: "en-us", group: "am" },
+  { id: "am_liam",    lang: "en-us", group: "am" },
+  { id: "am_michael", lang: "en-us", group: "am" },
+  { id: "am_onyx",    lang: "en-us", group: "am" },
+  { id: "am_puck",    lang: "en-us", group: "am" },
+  { id: "am_santa",   lang: "en-us", group: "am" },
+
+  // British Female
+  { id: "bf_alice",    lang: "en-gb", group: "bf" },
+  { id: "bf_emma",     lang: "en-gb", group: "bf" },
+  { id: "bf_isabella", lang: "en-gb", group: "bf" },
+  { id: "bf_lily",     lang: "en-gb", group: "bf" },
+
+  // British Male
+  { id: "bm_daniel", lang: "en-gb", group: "bm" },
+  { id: "bm_fable",  lang: "en-gb", group: "bm" },
+  { id: "bm_george", lang: "en-gb", group: "bm" },
+  { id: "bm_lewis",  lang: "en-gb", group: "bm" },
+];
+
+const GROUP_GRID = {
+  af: document.getElementById("af-grid"),
+  am: document.getElementById("am-grid"),
+  bf: document.getElementById("bf-grid"),
+  bm: document.getElementById("bm-grid"),
+};
+
+let currentAudio = null;
+let currentBtn   = null;
+
+function stopCurrent() {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (currentBtn) {
+    currentBtn.textContent = "▶ Play";
+    currentBtn.classList.remove("playing");
+    currentBtn = null;
+  }
+}
+
+async function playVoice(voice, lang, btn) {
+  // If this button is already playing, stop it
+  if (currentBtn === btn) { stopCurrent(); return; }
+  stopCurrent();
+
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  btn.classList.remove("error");
+
+  try {
+    const res = await fetch("/tts_preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voice, lang }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    currentAudio = audio;
+    currentBtn   = btn;
+
+    btn.textContent = "■ Stop";
+    btn.classList.add("playing");
+    btn.disabled = false;
+
+    audio.addEventListener("ended", () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) stopCurrent();
+    });
+    audio.addEventListener("error", () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) stopCurrent();
+      btn.textContent = "Error";
+      btn.classList.add("error");
+    });
+
+    await audio.play();
+
+  } catch (e) {
+    console.warn("TTS error:", e);
+    btn.textContent = "Error";
+    btn.classList.add("error");
+    btn.disabled = false;
+    currentBtn = null;
+  }
+}
+
+VOICES.forEach(({ id, lang, group }) => {
+  const grid = GROUP_GRID[group];
+  if (!grid) return;
+
+  const row = document.createElement("div");
+  row.className = "voice-row";
+
+  const idEl = document.createElement("span");
+  idEl.className = "voice-id";
+  idEl.textContent = id;
+
+  const btn = document.createElement("button");
+  btn.className = "play-btn";
+  btn.textContent = "▶ Play";
+  btn.addEventListener("click", () => playVoice(id, lang, btn));
+
+  row.appendChild(idEl);
+  row.appendChild(btn);
+  grid.appendChild(row);
+});
+</script>
+</body>
+</html>

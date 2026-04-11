@@ -487,6 +487,57 @@ def open_story():
     )
 
 
+@app.route("/suggest", methods=["POST"])
+def suggest():
+    """Return 2-3 short action options the player could take, based on current context."""
+    if not session["messages"]:
+        return {"suggestions": []}
+
+    # System prompt + last few turns for context (keep it short)
+    system = session["messages"][:1]
+    recent = [m for m in session["messages"][1:] if m["role"] != "system"]
+    context = system + recent[-6:]
+
+    suggest_prompt = (
+        "Suggest exactly 3 brief actions or responses the player could take next in the scene. "
+        "Each must be 1–2 sentences, written in first person as something the player does or says. "
+        "Vary the tone: one bold/direct, one tender/warm, one cautious/indirect. "
+        "Return ONLY a JSON array of 3 strings — no prose, no markdown fences, no commentary. "
+        'Example: ["I reach for her hand.", "\\"Tell me,\\" I say softly.", "I look away, unsure."]'
+    )
+    messages = context + [{"role": "user", "content": suggest_prompt}]
+
+    payload = json.dumps({
+        "model": session["model"],
+        "messages": messages,
+        "stream": False,
+    }).encode()
+
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+        content = result.get("message", {}).get("content", "").strip()
+        # Strip markdown fences if present
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content.strip())
+        suggestions = json.loads(content)
+        if isinstance(suggestions, list):
+            suggestions = [str(s) for s in suggestions[:3]]
+        else:
+            suggestions = []
+    except Exception as e:
+        print(f"Suggest error: {e}")
+        suggestions = []
+
+    return {"suggestions": suggestions}
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json

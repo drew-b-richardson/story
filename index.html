@@ -288,6 +288,35 @@
     40% { opacity: 1; }
   }
 
+  /* ── Suggestion chips ── */
+  #suggestions {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 0.5rem 1rem;
+    display: none;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .suggestion-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--accent2);
+    font-family: inherit;
+    font-size: 0.85rem;
+    padding: 0.35rem 0.85rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    text-align: left;
+    line-height: 1.4;
+  }
+
+  .suggestion-chip:hover {
+    background: var(--her-bubble);
+    border-color: var(--accent);
+  }
+
   #input-area {
     background: var(--surface);
     border-top: 1px solid var(--border);
@@ -399,6 +428,8 @@
 
   <div id="messages"></div>
 
+  <div id="suggestions"></div>
+
   <div id="input-area">
     <textarea id="user-input" rows="1" placeholder="Say something…"></textarea>
     <button id="btn-send" title="Send (Enter)">
@@ -416,6 +447,7 @@ let charName = 'Her';
 let streaming = false;
 let muted = false;
 let currentAudio = null;
+let suggestController = null;
 
 // ── Load stories ─────────────────────────────────────
 async function loadStories() {
@@ -517,10 +549,11 @@ $('user-input').addEventListener('keydown', e => {
   }
 });
 
-// Auto-resize textarea
+// Auto-resize textarea; hide suggestions when user starts typing their own text
 $('user-input').addEventListener('input', function() {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 80) + 'px';
+  if (this.value.trim()) clearSuggestions();
 });
 
 async function sendMessage() {
@@ -536,8 +569,53 @@ async function sendMessage() {
   await streamResponse('/chat', { message: text });
 }
 
+// ── Suggestions ──────────────────────────────────────
+function clearSuggestions() {
+  if (suggestController) { suggestController.abort(); suggestController = null; }
+  const el = $('suggestions');
+  el.style.display = 'none';
+  el.innerHTML = '';
+}
+
+async function loadSuggestions() {
+  clearSuggestions();
+  const controller = new AbortController();
+  suggestController = controller;
+  try {
+    const res = await fetch('/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (controller.signal.aborted) return;
+    const chips = data.suggestions || [];
+    if (!chips.length) return;
+    const el = $('suggestions');
+    chips.forEach(text => {
+      const btn = document.createElement('button');
+      btn.className = 'suggestion-chip';
+      btn.textContent = text;
+      btn.addEventListener('click', () => {
+        clearSuggestions();
+        const input = $('user-input');
+        input.value = text;
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 80) + 'px';
+        sendMessage();
+      });
+      el.appendChild(btn);
+    });
+    el.style.display = 'flex';
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('Suggest error:', e);
+  }
+}
+
 // ── Streaming ─────────────────────────────────────────
 async function streamResponse(url, body) {
+  clearSuggestions();
   streaming = true;
   $('btn-send').disabled = true;
   let fullText = '';
@@ -586,7 +664,10 @@ async function streamResponse(url, body) {
     streaming = false;
     $('btn-send').disabled = false;
     scrollToBottom();
-    if (fullText) speakText(fullText);
+    if (fullText) {
+      speakText(fullText);
+      loadSuggestions();
+    }
   }
 }
 

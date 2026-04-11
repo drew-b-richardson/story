@@ -26,80 +26,17 @@ KOKORO_VOICES = Path(__file__).parent / "kokoro_models" / "voices-v1.0.bin"
 NARRATOR_VOICE = "bf_emma"
 NARRATOR_LANG  = "en-gb"
 
-# Male character: British male
-MALE_CHAR_VOICE = "bm_george"
-MALE_CHAR_LANG  = "en-gb"
+# Primary character voices (main NPC and player)
+PRIMARY_MALE_CHARACTER_VOICE   = "am_michael"
+PRIMARY_MALE_CHARACTER_LANG    = "en-us"
+PRIMARY_FEMALE_CHARACTER_VOICE = "af_heart"
+PRIMARY_FEMALE_CHARACTER_LANG  = "en-us"
 
-# Default female character voice (British)
-CHARACTER_VOICE = "bf_isabella"
-CHARACTER_LANG  = "en-gb"
-
-# ── Voice selection by name/setting origin ────────────────────
-# Each entry: (keywords, voice, lang)
-# Checked against character name and story setting (case-insensitive).
-_ORIGIN_VOICE_MAP = [
-    # Japanese
-    (["japan", "tokyo", "kyoto", "osaka", "yoko", "yuki", "hana", "aiko",
-      "akiko", "haruki", "sakura", "keiko", "naomi", "rin", "yui", "asahi",
-      "mizuki", "natsuki", "setsuko", "tomoko", "yoshiko"],
-     "jf_alpha", "ja"),
-    # French
-    (["france", "paris", "lyon", "marseille", "bordeaux", "provence",
-      "marie", "camille", "celine", "céline", "amélie", "amelie", "isabelle",
-      "margot", "claire", "elise", "élise", "colette", "brigitte", "juliette"],
-     "ff_siwis", "fr-fr"),
-    # Italian
-    (["italy", "italian", "rome", "roma", "milan", "milano", "venice",
-      "florence", "firenze", "naples", "napoli",
-      "giulia", "chiara", "valentina", "francesca", "elena", "sofia",
-      "alessia", "beatrice", "aurora", "ginevra"],
-     "if_sara", "it"),
-    # Spanish
-    (["spain", "spanish", "madrid", "barcelona", "seville", "sevilla",
-      "mexico", "argentina", "colombia", "chile",
-      "sofia", "isabella", "carmen", "lucia", "lucía", "catalina",
-      "pilar", "consuelo", "dolores", "rosario", "paloma", "lola"],
-     "ef_dora", "es"),
-    # Portuguese / Brazilian
-    (["brazil", "brasil", "portugal", "lisbon", "lisboa", "porto",
-      "rio", "são paulo", "sao paulo",
-      "ana", "beatriz", "bruna", "fernanda", "larissa", "leticia",
-      "mariana", "natalia", "natália", "patricia", "patrícia"],
-     "pf_dora", "pt-br"),
-    # Chinese
-    (["china", "chinese", "beijing", "shanghai", "guangzhou", "chengdu",
-      "hong kong", "taiwan", "taipei",
-      "mei", "xia", "lan", "fang", "ying", "jing", "qian", "yan",
-      "xiaomei", "xiaoling", "xiaoyu", "lingling"],
-     "zf_xiaoxiao", "zh"),
-    # Hindi / Indian
-    (["india", "indian", "delhi", "mumbai", "bangalore", "kolkata",
-      "priya", "ananya", "aarti", "arti", "deepa", "divya", "geeta",
-      "kavya", "lakshmi", "meena", "nisha", "pooja", "puja", "radha",
-      "rekha", "rina", "sita", "sunita", "usha"],
-     "hf_alpha", "hi"),
-    # British (explicit)
-    (["england", "london", "scotland", "wales", "ireland", "uk",
-      "british", "victorian", "edwardian"],
-     "bf_lily", "en-gb"),
-    # American
-    (["america", "american", "usa", "new york", "los angeles", "chicago",
-      "texas", "california", "southern", "midwest"],
-     "af_heart", "en-us"),
-]
-
-
-def _pick_char_voice(profile: dict) -> tuple[str, str]:
-    """Return (voice, lang) for the female character based on name + setting."""
-    name    = profile.get("name", "").lower()
-    setting = profile.get("setting", "").lower()
-    haystack = f"{name} {setting}"
-
-    for keywords, voice, lang in _ORIGIN_VOICE_MAP:
-        if any(kw in haystack for kw in keywords):
-            return voice, lang
-
-    return CHARACTER_VOICE, CHARACTER_LANG  # default: British
+# Secondary character voices (side characters who enter the scene)
+SECONDARY_MALE_CHARACTER_VOICE   = "bm_fable"
+SECONDARY_MALE_CHARACTER_LANG    = "en-gb"
+SECONDARY_FEMALE_CHARACTER_VOICE = "af_bella"
+SECONDARY_FEMALE_CHARACTER_LANG  = "en-us"
 
 app = Flask(__name__)
 
@@ -143,40 +80,121 @@ def _float32_to_wav(samples, sample_rate: int = 24000) -> bytes:
     return buf.getvalue()
 
 
+# ── TTS segment parsing ───────────────────────────────────────
+# Past-tense verbs used for NPC / secondary character attribution
 _SPEECH_VERBS = r"(?:said|replied|answered|whispered|murmured|called|asked|demanded|muttered|added|continued|shouted|growled|breathed)"
+# Present AND past tense for player (second-person narration uses present tense: "you say", "you ask")
+_PLAYER_SPEECH_VERBS = r"(?:say|said|reply|replied|answer|answered|whisper|whispered|murmur|murmured|call|called|ask|asked|demand|demanded|mutter|muttered|add|added|continue|continued|shout|shouted|growl|growled|breathe|breathed)"
+_NAMED_ATTR_RE = re.compile(rf'\b([A-Z][a-z]{{2,}})\s+{_SPEECH_VERBS}\b')
 
-def _parse_segments(text: str, male_name: str = "") -> list[tuple[str, str]]:
+
+def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun: str) -> str:
+    """
+    Classify the speaker of a quoted passage from surrounding narrator text.
+    Returns: "player" | "other" | "secondary_male" | "secondary_female"
+
+    Uses position-based priority: whichever attribution tag appears earliest in
+    the text wins, so "she replied and you answered" correctly reads "she replied"
+    rather than letting the fixed-order player check override it.
+    """
+    if not narr:
+        return "other"
+
+    candidates: list[tuple[int, str]] = []  # (match_start, speaker_type)
+
+    # Player: "you said/asked/…" (second-person, present or past)
+    for m in re.finditer(rf'\byou\s+{_PLAYER_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+        candidates.append((m.start(), "player"))
+
+    # Player by name: "Andrew said" (third-person fallback)
+    if player_name:
+        for m in re.finditer(rf'\b{re.escape(player_name)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            candidates.append((m.start(), "player"))
+
+    # Primary NPC by name: "Amy said"
+    if other_name:
+        for m in re.finditer(rf'\b{re.escape(other_name)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            candidates.append((m.start(), "other"))
+
+    # Primary NPC by pronoun: "she said" / "he said"
+    if other_pronoun:
+        for m in re.finditer(rf'\b{re.escape(other_pronoun)}\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            candidates.append((m.start(), "other"))
+
+    # Secondary characters: any other capitalised name with a speech verb
+    known = {n.lower() for n in (other_name, player_name, "you") if n}
+    for m in _NAMED_ATTR_RE.finditer(narr):
+        if m.group(1).lower() not in known:
+            # Infer gender from pronouns near this name only (±40 chars),
+            # so a female primary NPC's "she" doesn't bleed into unrelated names.
+            start = max(0, m.start() - 40)
+            end = min(len(narr), m.end() + 40)
+            local = narr[start:end]
+            has_she = bool(re.search(r'\bshe\b', local, re.IGNORECASE))
+            has_he = bool(re.search(r'\bhe\b', local, re.IGNORECASE))
+            if has_she and not has_he:
+                candidates.append((m.start(), "secondary_female"))
+            elif has_he and not has_she:
+                candidates.append((m.start(), "secondary_male"))
+            elif other_pronoun == "she":
+                # Primary NPC is female; default secondary to male to avoid confusion
+                candidates.append((m.start(), "secondary_male"))
+            else:
+                candidates.append((m.start(), "secondary_female"))
+
+    # Opposite-gender pronoun (cannot be the primary NPC)
+    if other_pronoun == "she":
+        for m in re.finditer(rf'\bhe\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            candidates.append((m.start(), "secondary_male"))
+    elif other_pronoun == "he":
+        for m in re.finditer(rf'\bshe\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+            candidates.append((m.start(), "secondary_female"))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
+
+    return "other"  # default to primary NPC
+
+
+def _parse_segments(
+    text: str,
+    player_name: str = "",
+    player_pronoun: str = "you",
+    other_name: str = "",
+    other_pronoun: str = "she",
+) -> list[tuple[str, str]]:
     """
     Split narrator text into (segment, speaker) tuples.
-    speaker: "narrator" | "female" | "male"
-    Quoted text is attributed by checking the preceding narrator clause for
-    'he <verb>' or '<male_name> <verb>' patterns.
+    speaker: "narrator" | "other" | "player" | "secondary_male" | "secondary_female"
     Also strips *action* markers so they're read naturally.
     """
-    # Remove HTML/markdown artifacts from the text
-    clean = re.sub(r"\*([^*\n]+)\*", r"\1", text)  # strip *action* markers
-    clean = re.sub(r"<[^>]+>", "", clean)           # strip any HTML tags
-
-    # Build a pattern that matches male attribution before a quote
-    name_alts = "|".join(filter(None, ["he", re.escape(male_name) if male_name and male_name.lower() not in ("you", "") else ""]))
-    male_attr_re = re.compile(
-        rf'\b(?:{name_alts})\s+{_SPEECH_VERBS}\b',
-        re.IGNORECASE,
-    )
+    clean = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    clean = re.sub(r"<[^>]+>", "", clean)
 
     segments: list[tuple[str, str]] = []
     pattern = re.compile(r'"[^"]{1,500}"')
     last = 0
-    last_narr = ""
     for m in pattern.finditer(clean):
         narr = clean[last:m.start()].strip()
         if narr:
             segments.append((narr, "narrator"))
-            last_narr = narr
-        else:
-            last_narr = ""
-        # Attribute dialogue to male if the preceding narrator text says so
-        speaker = "male" if male_attr_re.search(last_narr) else "female"
+        # Pre-attribution: last ≤80 chars before the opening quote.
+        # Captures "She whispered, [quote]" lead-ins without reaching back
+        # into the previous quote's own attribution tag.
+        pre_narr = narr[-80:].strip() if narr else ""
+
+        # Post-attribution: text after the closing quote, but only up to the
+        # first sentence-ending punctuation (.!?) — this catches the dominant
+        # pattern '"Hello," she said.' without crossing into the next sentence
+        # where the OTHER character might be described with a speech verb
+        # ("You answered with a nod.").
+        post_raw = clean[m.end():m.end() + 120]
+        sent_end = re.search(r'[.!?]', post_raw)
+        post_narr = post_raw[:sent_end.end()].strip() if sent_end else post_raw.strip()
+
+        combined_narr = (pre_narr + " " + post_narr).strip()
+        speaker = _detect_speaker(combined_narr, player_name, other_name, other_pronoun)
         segments.append((m.group(), speaker))
         last = m.end()
     tail = clean[last:].strip()
@@ -186,13 +204,19 @@ def _parse_segments(text: str, male_name: str = "") -> list[tuple[str, str]]:
 
 
 # ── In-memory session store (single user) ─────────────────────
+# All character fields are None until /start assigns them.
 session = {
-    "messages": [],
-    "profile": None,
-    "model": "romance:latest",
-    "char_voice": CHARACTER_VOICE,
-    "char_lang":  CHARACTER_LANG,
-    "male_name":  "You",
+    "messages":       [],
+    "profile":        None,
+    "model":          "romance:latest",
+    "other_voice":    PRIMARY_FEMALE_CHARACTER_VOICE,
+    "other_lang":     PRIMARY_FEMALE_CHARACTER_LANG,
+    "other_name":     None,
+    "other_pronoun":  None,
+    "player_voice":   PRIMARY_MALE_CHARACTER_VOICE,
+    "player_lang":    PRIMARY_MALE_CHARACTER_LANG,
+    "player_name":    None,
+    "player_pronoun": None,
 }
 
 
@@ -206,16 +230,33 @@ def models():
     return {"models": list_models()}
 
 
+@app.route("/stories")
+def stories():
+    files = sorted(p.name for p in STORIES_DIR.glob("*.txt"))
+    return {"stories": files}
+
+
 @app.route("/start", methods=["POST"])
 def start():
     data = request.json
     model = data.get("model", "romance:latest")
 
-    stories = list(STORIES_DIR.glob("*.txt"))
-    if not stories:
+    all_stories = list(STORIES_DIR.glob("*.txt"))
+    if not all_stories:
         return {"error": f"No .txt files found in {STORIES_DIR}"}, 400
 
-    chosen = random.choice(stories)
+    story_pick = data.get("story", "random")
+    if story_pick and story_pick != "random":
+        chosen = (STORIES_DIR / story_pick).resolve()
+        try:
+            chosen.relative_to(STORIES_DIR.resolve())
+        except ValueError:
+            return {"error": "Invalid story path"}, 400
+        if not chosen.exists():
+            return {"error": f"Story not found: {story_pick}"}, 400
+    else:
+        chosen = random.choice(all_stories)
+
     story_text = chosen.read_text(encoding="utf-8", errors="replace")
 
     try:
@@ -223,37 +264,74 @@ def start():
     except Exception as e:
         return {"error": str(e)}, 500
 
-    if profile.get("name", "Her").strip().lower() in ("her", "she", ""):
-        profile["name"] = random.choice([
-            "Amelia", "Clara", "Elena", "Isla", "Lyra",
-            "Mara", "Nora", "Rose", "Sarah", "Vera",
-        ])
+    _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Nora", "Rose", "Sarah", "Vera"]
+    _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
+
+    other_gender  = profile.get("other_gender", "female").lower()
+    player_gender = profile.get("player_gender", "male").lower()
+
+    # Ensure both characters have real names
+    other_name = profile.get("other_name", "").strip()
+    if not other_name or other_name.lower() in ("her", "she", "him", "he", "they"):
+        profile["other_name"] = random.choice(_FEMALE_NAMES if other_gender == "female" else _MALE_NAMES)
+
+    player_name = profile.get("player_name", "").strip()
+    if not player_name or player_name.lower() in ("you", "her", "she", "him", "he", "they"):
+        profile["player_name"] = random.choice(_MALE_NAMES if player_gender == "male" else _FEMALE_NAMES)
+
+    # Assign PRIMARY voices deterministically by gender.
+    # Secondary characters that enter the scene use SECONDARY voices (handled in /tts).
+    if other_gender == "male":
+        other_voice, other_lang = PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+    else:
+        other_voice, other_lang = PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+
+    # When both characters share a gender, use the secondary voice for the player
+    # so they're distinguishable in TTS.
+    if player_gender == other_gender:
+        if player_gender == "male":
+            player_voice, player_lang = SECONDARY_MALE_CHARACTER_VOICE, SECONDARY_MALE_CHARACTER_LANG
+        else:
+            player_voice, player_lang = SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG
+    elif player_gender == "male":
+        player_voice, player_lang = PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+    else:
+        player_voice, player_lang = PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+
+    other_pronoun  = "he" if other_gender == "male" else "she"
+    player_pronoun = "you"  # player is always narrated in second person
 
     system_prompt = build_system_prompt(profile, story_context)
 
     print("\n" + "═" * 60)
-    print(f"  STORY: {chosen.name}")
+    print(f"  STORY : {chosen.name}")
     print("═" * 60)
     print(json.dumps(profile, indent=2, ensure_ascii=False))
+    print("═" * 60)
+    print(f"  Narrator                          → {NARRATOR_VOICE} ({NARRATOR_LANG})")
+    print(f"  NPC    [{other_gender:6}] {profile['other_name']:20} → {other_voice} ({other_lang})")
+    print(f"  Player [{player_gender:6}] {profile['player_name']:20} → {player_voice} ({player_lang})")
+    print(f"  2nd ♂  [male  ] secondary male         → {SECONDARY_MALE_CHARACTER_VOICE} ({SECONDARY_MALE_CHARACTER_LANG})")
+    print(f"  2nd ♀  [female] secondary female        → {SECONDARY_FEMALE_CHARACTER_VOICE} ({SECONDARY_FEMALE_CHARACTER_LANG})")
     print("═" * 60 + "\n")
 
-    char_voice, char_lang = _pick_char_voice(profile)
-
-    session["model"] = model
-    session["profile"] = profile
-    session["messages"] = [{"role": "system", "content": system_prompt}]
-    session["char_voice"] = char_voice
-    session["char_lang"]  = char_lang
-    session["male_name"]  = profile.get("male_name", "You")
-
-    print(f"  Voice: {char_voice} ({char_lang})\n")
+    session["model"]          = model
+    session["profile"]        = profile
+    session["messages"]       = [{"role": "system", "content": system_prompt}]
+    session["other_voice"]    = other_voice
+    session["other_lang"]     = other_lang
+    session["other_name"]     = profile["other_name"]
+    session["other_pronoun"]  = other_pronoun
+    session["player_voice"]   = player_voice
+    session["player_lang"]    = player_lang
+    session["player_name"]    = profile["player_name"]
+    session["player_pronoun"] = player_pronoun
 
     return {
-        "name": profile.get("name", "Her"),
-        "male_name": profile.get("male_name", "You"),
-        "setting": profile.get("setting", ""),
-        "stage": profile.get("relationship_stage", ""),
-        "summary": profile.get("story_summary", ""),
+        "name":        profile["other_name"],
+        "setting":     profile.get("setting", ""),
+        "stage":       profile.get("relationship_stage", ""),
+        "summary":     profile.get("story_summary", ""),
         "personality": profile.get("personality", []),
     }
 
@@ -303,12 +381,12 @@ def open_story():
     trigger_msg = {"role": "user", "content": (
         "[Begin the story. 3–4 paragraphs maximum. "
         "Open in medias res — the scene is already in motion. "
-        "Weave in one or two vivid physical details about her naturally as the scene unfolds; do not front-load a description block. "
-        "End on a single unresolved beat: she says one thing or does one thing that demands a response. Stop there.]"
+        "Weave in one or two vivid physical details about the NPC naturally as the scene unfolds; do not front-load a description block. "
+        "End on a single unresolved beat: they say one thing or do one thing that demands a response. Stop there.]"
     )}
-    messages = session["messages"] + [trigger_msg]
+    session["messages"].append(trigger_msg)
     return Response(
-        stream_with_context(_ollama_stream(messages)),
+        stream_with_context(_ollama_stream(session["messages"])),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -342,7 +420,13 @@ def tts():
     try:
         import numpy as np
         kokoro = get_kokoro()
-        segments = _parse_segments(text, male_name=session.get("male_name", ""))
+        segments = _parse_segments(
+            text,
+            player_name=session["player_name"] or "",
+            player_pronoun=session["player_pronoun"] or "you",
+            other_name=session["other_name"] or "",
+            other_pronoun=session["other_pronoun"] or "she",
+        )
 
         SR = 24000
         silence = np.zeros(int(SR * 0.18), dtype=np.float32)
@@ -352,10 +436,14 @@ def tts():
             seg_text = seg_text.strip()
             if not seg_text:
                 continue
-            if speaker == "male":
-                voice, lang = MALE_CHAR_VOICE, MALE_CHAR_LANG
-            elif speaker == "female":
-                voice, lang = session["char_voice"], session["char_lang"]
+            if speaker == "player":
+                voice, lang = session["player_voice"], session["player_lang"]
+            elif speaker == "other":
+                voice, lang = session["other_voice"], session["other_lang"]
+            elif speaker == "secondary_male":
+                voice, lang = SECONDARY_MALE_CHARACTER_VOICE, SECONDARY_MALE_CHARACTER_LANG
+            elif speaker == "secondary_female":
+                voice, lang = SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG
             else:  # narrator
                 voice, lang = NARRATOR_VOICE, NARRATOR_LANG
             samples, _ = kokoro.create(seg_text, voice=voice, speed=1.0, lang=lang)

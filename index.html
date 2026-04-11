@@ -355,6 +355,13 @@
 
   <div class="setup-card">
     <div>
+      <label>Story</label>
+      <select id="story-select">
+        <option value="random">— Random —</option>
+      </select>
+    </div>
+
+    <div>
       <label>Ollama Model</label>
       <select id="model-select">
         <option value="">Loading models…</option>
@@ -401,6 +408,24 @@ let streaming = false;
 let muted = false;
 let currentAudio = null;
 
+// ── Load stories ─────────────────────────────────────
+async function loadStories() {
+  try {
+    const res = await fetch('/stories');
+    const data = await res.json();
+    const sel = $('story-select');
+    sel.innerHTML = '<option value="random">— Random —</option>';
+    data.stories.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
+      sel.appendChild(opt);
+    });
+  } catch {
+    // leave the default "Random" option
+  }
+}
+
 // ── Load models ──────────────────────────────────────
 async function loadModels() {
   try {
@@ -416,7 +441,7 @@ async function loadModels() {
       sel.appendChild(opt);
     });
   } catch {
-    $('model-select').innerHTML = '<option value="romance:latest">romance:latest</option>';
+    $('model-select').innerHTML = '<option value="hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M">nemo latest</option>';
   }
 }
 
@@ -425,6 +450,7 @@ $('btn-start').addEventListener('click', startStory);
 
 async function startStory() {
   const model = $('model-select').value;
+  const story = $('story-select').value;
 
   $('btn-start').disabled = true;
   setStatus('Analyzing story and building character…');
@@ -433,7 +459,7 @@ async function startStory() {
     const res = await fetch('/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, story }),
     });
 
     const data = await res.json();
@@ -662,6 +688,7 @@ async function speakText(text) {
 }
 
 // ── Init ──────────────────────────────────────────────
+loadStories();
 loadModels();
 </script>
 </body>

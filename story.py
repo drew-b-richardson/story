@@ -117,9 +117,15 @@ def analyze_story(story_text: str, model: str) -> dict:
                 "- setting: where/when the story takes place\n"
                 "- relationship_stage: where they are at the start (strangers, friends, dating, etc)\n"
                 "- story_summary: 3-4 sentence summary of the story arc\n"
-                "- secondary_characters: array of objects for any other named characters (not the two leads), each with 'name' and 'gender' ('male' or 'female'). If none, use an empty array.\n"
-                "- story_beats: array of 5-8 key emotional situations or turning points from the story, "
-                "described as situations to encounter (not outcomes) — e.g. 'they are alone together for the first time and tension builds' not 'they kiss'\n"
+                "- secondary_characters: array of at most TWO supporting characters (not the two leads) — at most one male and at most one female. If the story has several side characters of the same gender, pick the most significant one and ignore the rest. Each object has 'name' and 'gender' ('male' or 'female'). If none, use an empty array.\n"
+                "- story_beats: array of 5-8 story beats. Each beat must be 2-3 sentences covering: "
+                "(1) the scene setup or situation, (2) the emotional tension or stakes, "
+                "(3) a concrete sensory detail or specific action that could spark it. "
+                "Write as a situation to CREATE, not an outcome — "
+                "e.g. 'They end up alone together for the first time, the usual noise of the world gone quiet around them. "
+                "Something unspoken has been building and the proximity makes it undeniable. "
+                "A brush of hands reaching for the same thing, or a long silence that stretches too long, could be the spark.' "
+                "NOT just 'they kiss'\n"
                 "- appearance: detailed physical description of other_name — height, build, face shape, skin tone, age\n"
                 "- hair: other_name's hair color, length, texture, and typical style\n"
                 "- eyes: other_name's eye color, shape, and any notable quality\n"
@@ -330,8 +336,10 @@ Physical appearance (weave these details into scenes naturally):
 - Scent: {scent}
 - Typical dress: {clothing_style}
 
-═══ STORY BEATS (your secret roadmap) ═══
-These are the emotional situations the story should move through — in rough order, but not rigidly. Guide the story toward each one organically. The user's choices can change HOW each beat unfolds, delay or accelerate beats, or produce entirely different outcomes. The beats are situations to arrive at, not scripts to follow.
+═══ STORY BEATS (your active job) ═══
+These are the emotional situations you must bring to life. Do not wait for the player to create them — you drive the story toward them. They do not need to happen in order; pick whichever fits the current mood. If a beat has not appeared in 3–4 exchanges, force it into the action. When a beat arrives, own it fully for 1–2 exchanges before moving on.
+
+HOW TO INJECT A BEAT: Introduce it through the world or {other_name}'s behaviour, not as an announcement. A beat is a situation you engineer — shift the setting, have {other_name} do something unexpected, bring in a prop or a third party, change the lighting or the mood. Make it feel inevitable, not scripted.
 {beats_text}
 
 ═══ HOW TO NARRATE ═══

@@ -317,6 +317,26 @@ def _profile_to_markdown(profile: dict) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def _trim_characters(profile: dict) -> dict:
+    """
+    Enforce role limits: at most one SECONDARY_MALE and one SECONDARY_FEMALE.
+    Keeps the first male and first female secondary character; drops the rest.
+    """
+    secondary = profile.get("secondary_characters", [])
+    if not secondary:
+        return profile
+    kept_male = None
+    kept_female = None
+    for sc in secondary:
+        g = sc.get("gender", "").lower()
+        if g == "male" and kept_male is None:
+            kept_male = sc
+        elif g == "female" and kept_female is None:
+            kept_female = sc
+    profile["secondary_characters"] = [sc for sc in (kept_male, kept_female) if sc]
+    return profile
+
+
 def _profile_to_story_markdown(profile: dict) -> str:
     """Build story.md from profile fields using role labels instead of character names."""
     player_gender = profile.get("player_gender", "male").lower()
@@ -440,6 +460,8 @@ session = {
     "player_name":    None,
     "player_pronoun": None,
     "secondary_characters": {},
+    "story_beats":    [],
+    "beat_index":     0,
 }
 
 
@@ -493,6 +515,9 @@ def analyze():
         model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
         profile, story_context = analyze_story(story_text, model)
+
+        # Enforce role limits before enrichment (avoid wasting LLM calls on dropped chars)
+        profile = _trim_characters(profile)
 
         # Second pass: fill in physical descriptions, loves/hates, secondary details
         profile = enrich_character_profile(profile, story_context, model)
@@ -662,6 +687,8 @@ def start():
     session["player_name"]    = profile["player_name"]
     session["player_pronoun"] = player_pronoun
     session["secondary_characters"] = secondary_characters
+    session["story_beats"]    = profile.get("story_beats", [])
+    session["beat_index"]     = 0
 
     return {
         "name":        profile["other_name"],
@@ -801,9 +828,30 @@ def chat():
     if not session["messages"]:
         return {"error": "No active story. Call /start first."}, 400
 
+    # Store the clean message in history
     session["messages"].append({"role": "user", "content": user_input})
+
+    # Every 3 user turns inject a beat nudge into what the LLM sees,
+    # but NOT into the stored session history.
+    beats = session.get("story_beats", [])
+    messages_for_llm = session["messages"]
+    if beats:
+        turn_count = sum(1 for m in session["messages"] if m["role"] == "user")
+        if turn_count % 3 == 0:
+            beat_idx = session["beat_index"] % len(beats)
+            beat = beats[beat_idx]
+            session["beat_index"] += 1
+            nudge = (
+                f"\n\n[Scene director: You have not yet brought this beat into the action — "
+                f"introduce it naturally within this exchange or the next. "
+                f"Engineer the situation; don't announce it: {beat}]"
+            )
+            messages_for_llm = session["messages"][:-1] + [
+                {"role": "user", "content": user_input + nudge}
+            ]
+
     return Response(
-        stream_with_context(_ollama_stream(session["messages"])),
+        stream_with_context(_ollama_stream(messages_for_llm)),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

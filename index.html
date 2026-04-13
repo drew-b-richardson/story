@@ -550,6 +550,7 @@ let streaming = false;
 let muted = false;
 let currentAudio = null;
 let suggestController = null;
+let streamController = null;
 let selectedGender = 'auto';
 let storiesCache = [];
 
@@ -668,9 +669,10 @@ async function startStory(story) {
     }
 
     charName = data.name || 'Her';
-    $('char-name').textContent = charName;
+    const playerName = data.player_name || 'You';
+    $('char-name').textContent = playerName;
     $('char-meta').textContent = [data.setting, data.stage].filter(Boolean).join(' · ');
-    $('char-avatar').textContent = charName[0] || '♥';
+    $('char-avatar').textContent = playerName[0] || '♥';
 
     if (data.summary) {
       $('summary-panel').textContent = data.summary;
@@ -692,6 +694,11 @@ async function startStory(story) {
 
 // ── New story ────────────────────────────────────────
 $('btn-new-story').addEventListener('click', () => {
+  if (streamController) { streamController.abort(); streamController = null; }
+  clearSuggestions();
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  $('messages').innerHTML = '';
+  $('summary-panel').textContent = '';
   $('chat-screen').style.display = 'none';
   $('setup-screen').style.display = 'flex';
   $('summary-panel').style.display = 'none';
@@ -781,12 +788,15 @@ async function streamResponse(url, body) {
   let fullText = '';
 
   const typingEl = appendTyping();
+  const controller = new AbortController();
+  streamController = controller;
 
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: body ? { 'Content-Type': 'application/json' } : {},
       body: body ? JSON.stringify(body) : null,
+      signal: controller.signal,
     });
 
     const reader = res.body.getReader();
@@ -819,12 +829,15 @@ async function streamResponse(url, body) {
         } catch {}
       }
     }
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('Stream error:', e);
   } finally {
     try { typingEl.remove(); } catch {}
     streaming = false;
     $('btn-send').disabled = false;
+    if (streamController === controller) streamController = null;
     scrollToBottom();
-    if (fullText) {
+    if (fullText && !controller.signal.aborted) {
       speakText(fullText);
       loadSuggestions();
     }

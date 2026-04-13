@@ -46,6 +46,7 @@ STORIES_DIR = Path(__file__).parent / "stories"
 STORIES_DIR_JA = Path(__file__).parent / "stories_ja"
 SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
 SUMMARIES_DIR_JA = Path(__file__).parent / "story_summaries_jp"
+LOGS_DIR = Path(__file__).parent / "logs"
 
 
 def _summaries_dir(lang: str) -> Path:
@@ -54,6 +55,147 @@ def _summaries_dir(lang: str) -> Path:
 
 def _stories_dir(lang: str) -> Path:
     return STORIES_DIR_JA if (lang or "").lower() == "ja" else STORIES_DIR
+
+
+def _append_log(role: str, content: str) -> None:
+    """Append a single message turn to the active session log file."""
+    log_path = session.get("log_file")
+    if not log_path:
+        return
+    try:
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n### [{ts}] {role.upper()}\n\n{content}\n")
+    except OSError:
+        pass
+
+
+# How many user turns between context compressions
+_COMPRESS_EVERY = 10
+# How many recent exchanges (user+assistant pairs) to keep verbatim after compression
+_KEEP_RECENT_EXCHANGES = 3
+
+
+def _compress_history() -> None:
+    """Summarize the conversation history and replace old messages with the summary.
+
+    Keeps the system prompt and the most recent _KEEP_RECENT_EXCHANGES exchanges
+    verbatim. Everything older is replaced with a single injected assistant message
+    containing a concise narrative recap.
+    """
+    import datetime
+
+    messages = session.get("messages", [])
+    system_msg = messages[0] if messages and messages[0]["role"] == "system" else None
+
+    # Separate non-system messages
+    history = [m for m in messages if m["role"] != "system"]
+
+    # Pair up user/assistant turns; keep last N pairs verbatim
+    pairs = []
+    i = 0
+    while i < len(history) - 1:
+        if history[i]["role"] == "user" and history[i + 1]["role"] == "assistant":
+            pairs.append((history[i], history[i + 1]))
+            i += 2
+        else:
+            i += 1
+
+    to_summarize = pairs[:-_KEEP_RECENT_EXCHANGES] if len(pairs) > _KEEP_RECENT_EXCHANGES else []
+    keep_pairs   = pairs[-_KEEP_RECENT_EXCHANGES:]
+
+    if not to_summarize:
+        return  # nothing old enough to compress
+
+    # Build a flat transcript for the summarization prompt
+    transcript_parts = []
+    for user_m, asst_m in to_summarize:
+        transcript_parts.append(f"Player: {user_m['content']}")
+        transcript_parts.append(f"Story: {asst_m['content']}")
+    transcript = "\n\n".join(transcript_parts)
+
+    lang = session.get("lang", "en")
+    if lang == "ja":
+        summary_instruction = (
+            "以下はインタラクティブストーリーの会話履歴です。"
+            "登場人物の関係性、重要な出来事、感情の変化、伏線を含む簡潔な要約を書いてください。"
+            "散文形式で3〜5段落にまとめ、説明や前置きは不要です。"
+        )
+    else:
+        summary_instruction = (
+            "The following is a transcript from an interactive story roleplay session. "
+            "Write a concise narrative recap covering: the characters' relationship dynamic, "
+            "key events and emotional beats, any plot threads introduced, and where things stand. "
+            "Plain prose, 3–5 paragraphs, no preamble or meta-commentary."
+        )
+
+    sum_messages = [
+        {"role": "system", "content": summary_instruction},
+        {"role": "user",   "content": transcript},
+    ]
+
+    payload = json.dumps({
+        "model": session["model"],
+        "messages": sum_messages,
+        "stream": False,
+        "options": {"num_ctx": 8192, "num_predict": 600},
+    }).encode()
+
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+        summary_text = result.get("message", {}).get("content", "").strip()
+    except Exception as e:
+        summary_text = f"[Summary unavailable: {e}]"
+
+    # Inject summary as a special assistant message so the model has full context
+    summary_injection = {
+        "role": "assistant",
+        "content": (
+            "[STORY SO FAR — narrative recap of earlier events]\n\n"
+            f"{summary_text}\n\n"
+            "[End of recap. Continuing story from here.]"
+        ),
+    }
+
+    # Reconstruct message list: system + summary + recent verbatim pairs
+    new_messages = []
+    if system_msg:
+        new_messages.append(system_msg)
+    new_messages.append(summary_injection)
+    for user_m, asst_m in keep_pairs:
+        new_messages.append(user_m)
+        new_messages.append(asst_m)
+
+    before_count = len(messages)
+    after_count  = len(new_messages)
+    session["messages"] = new_messages
+
+    # Log the compression event
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    log_path = session.get("log_file")
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(
+                    f"\n---\n\n"
+                    f"### [{ts}] CONTEXT COMPRESSION\n\n"
+                    f"- Messages before: {before_count}  →  after: {after_count}\n"
+                    f"- Summarized {len(to_summarize)} exchange(s), kept {len(keep_pairs)} verbatim\n\n"
+                    f"**Summary injected:**\n\n{summary_text}\n\n"
+                    f"---\n"
+                )
+        except OSError:
+            pass
+
+
 KOKORO_MODEL = Path(__file__).parent / "kokoro_models" / "kokoro-v1.0.onnx"
 KOKORO_VOICES = Path(__file__).parent / "kokoro_models" / "voices-v1.0.bin"
 
@@ -1135,7 +1277,7 @@ def start():
         _PRONOUN_STOPS = ("you", "her", "she", "him", "he", "they",
                           "あなた", "彼", "彼女")
     else:
-        _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Nora", "Rose", "Sarah", "Vera"]
+        _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Natalie", "Rose", "Sarah", "Vera"]
         _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
         _PRONOUN_STOPS = ("you", "her", "she", "him", "he", "they")
 
@@ -1145,13 +1287,53 @@ def start():
         assigned_player_gender = profile.get("player_gender", "male").lower()
         if assigned_player_gender != preferred_gender:
             # Swap all player ↔ other fields so the user plays the right character.
-            for key_pair in [("player_name", "other_name"),
-                             ("player_gender", "other_gender")]:
-                pk, ok = key_pair
+            # NPC-only fields (speech_style, affection_style, key_behaviors,
+            # dealbreakers) have no player counterpart — they transfer to whoever
+            # ends up as the NPC, which is the best we can do without re-analysis.
+            for pk, ok in [
+                ("player_name",           "other_name"),
+                ("player_gender",         "other_gender"),
+                ("player_appearance",     "appearance"),
+                ("player_hair",           "hair"),
+                ("player_eyes",           "eyes"),
+                ("player_scent",          "scent"),
+                ("player_clothing_style", "clothing_style"),
+                ("player_personality",    "personality"),
+                ("player_desires",        "desires"),
+                ("player_loves",          "other_loves"),
+                ("player_hates",          "other_hates"),
+            ]:
                 profile[pk], profile[ok] = profile.get(ok, ""), profile.get(pk, "")
-            # Swap any appearance/personality fields that are character-specific.
-            # The LLM always describes "other", so after a swap those fields now
-            # describe the new "other" — which is correct; no extra work needed.
+
+            # The LLM's story_summary, story_beats, setting, relationship_stage,
+            # and key_behaviors were written with the ORIGINAL player/other names
+            # baked in — so after the role swap they still narrate the arc from
+            # the wrong character's POV. Flip the two names inside those strings
+            # so the narrative re-centers on the new player.
+            orig_player = profile.get("other_name", "")   # post-swap, this was the old player
+            orig_other  = profile.get("player_name", "")  # post-swap, this was the old other
+            if orig_player and orig_other and orig_player != orig_other:
+                sentinel = "\x00SWAP\x00"
+                def _flip(text: str) -> str:
+                    if not text:
+                        return text
+                    if story_lang == "ja":
+                        text = text.replace(orig_player, sentinel)
+                        text = text.replace(orig_other, orig_player)
+                        text = text.replace(sentinel, orig_other)
+                    else:
+                        text = re.sub(rf'\b{re.escape(orig_player)}\b', sentinel, text)
+                        text = re.sub(rf'\b{re.escape(orig_other)}\b',  orig_player, text)
+                        text = text.replace(sentinel, orig_other)
+                    return text
+                for key in ("story_summary", "setting", "relationship_stage",
+                            "speech_style", "affection_style", "dealbreakers"):
+                    if isinstance(profile.get(key), str):
+                        profile[key] = _flip(profile[key])
+                for key in ("story_beats", "key_behaviors"):
+                    items = profile.get(key)
+                    if isinstance(items, list):
+                        profile[key] = [_flip(s) if isinstance(s, str) else s for s in items]
 
     other_gender  = profile.get("other_gender", "female").lower()
     player_gender = profile.get("player_gender", "male").lower()
@@ -1217,9 +1399,29 @@ def start():
             print(f"    {sc_name.capitalize():20} [{sc_gender:6}] → {voice}")
     print("═" * 60 + "\n")
 
+    # Create log file for this session
+    import datetime
+    LOGS_DIR.mkdir(exist_ok=True)
+    _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _safe_story = re.sub(r"[^\w\-]", "_", story_name)
+    _log_path = LOGS_DIR / f"{_ts}_{_safe_story}.md"
+    _log_path.write_text(
+        f"# Session log\n\n"
+        f"- **Story:** {story_name}\n"
+        f"- **Model:** {model}\n"
+        f"- **Player:** {profile['player_name']} ({profile.get('player_gender', '?')})\n"
+        f"- **NPC:** {profile['other_name']} ({profile.get('other_gender', '?')})\n"
+        f"- **Lang:** {story_lang}\n"
+        f"- **Started:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"---\n\n"
+        f"### [SYSTEM PROMPT]\n\n{system_prompt}\n\n---\n",
+        encoding="utf-8",
+    )
+
     session["model"]          = model
     session["profile"]        = profile
     session["messages"]       = [{"role": "system", "content": system_prompt}]
+    session["log_file"]       = _log_path
     session["other_voice"]    = other_voice
     session["other_lang"]     = other_lang
     session["other_name"]     = profile["other_name"]
@@ -1235,10 +1437,11 @@ def start():
 
     return {
         "name":        profile["other_name"],
+        "player_name": profile["player_name"],
         "setting":     profile.get("setting", ""),
         "stage":       profile.get("relationship_stage", ""),
         "summary":     profile.get("story_summary", ""),
-        "personality": profile.get("personality", []),
+        "personality": profile.get("player_personality", []),
     }
 
 
@@ -1280,6 +1483,11 @@ def _ollama_stream(messages):
 
     assembled = "".join(full)
     session["messages"].append({"role": "assistant", "content": assembled})
+    # Log the last user prompt (if any) and the assembled reply
+    user_turns = [m for m in session.get("messages", []) if m["role"] == "user"]
+    if user_turns:
+        _append_log("user", user_turns[-1]["content"])
+    _append_log("assistant", assembled)
     yield f"data: {json.dumps({'done': True})}\n\n"
 
 
@@ -1396,14 +1604,19 @@ def chat():
     # Store the clean message in history
     session["messages"].append({"role": "user", "content": user_input})
 
+    # Compress history every N user turns to prevent context overflow
+    user_turn_count = sum(1 for m in session["messages"] if m["role"] == "user")
+    if user_turn_count > 0 and user_turn_count % _COMPRESS_EVERY == 0:
+        _compress_history()
+
     # Every 3 user turns inject a beat nudge into what the LLM sees,
     # but NOT into the stored session history.
     beats = session.get("story_beats", [])
     messages_for_llm = session["messages"]
     if beats:
         turn_count = sum(1 for m in session["messages"] if m["role"] == "user")
-        if turn_count % 3 == 0:
-            beat_idx = session["beat_index"] % len(beats)
+        beat_idx = session["beat_index"]
+        if turn_count % 3 == 0 and beat_idx < len(beats):
             beat = beats[beat_idx]
             session["beat_index"] += 1
             nudge = (

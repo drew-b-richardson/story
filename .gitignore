@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 *.pyc
 kokoro_models/
+story_summaries_jp/
+stories_ja/
+

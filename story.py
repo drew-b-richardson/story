@@ -20,11 +20,15 @@ STORY_CHAR_LIMIT = 8000
 
 
 
+NUM_CTX = 8192  # context window passed to every Ollama call
+
+
 def ollama_chat(model: str, messages: list, stream: bool = True) -> str:
     payload = json.dumps({
         "model": model,
         "messages": messages,
         "stream": stream,
+        "options": {"num_ctx": NUM_CTX},
     }).encode()
 
     req = urllib.request.Request(
@@ -72,9 +76,61 @@ def list_models() -> list[str]:
         return []
 
 
-def analyze_story(story_text: str, model: str) -> dict:
-    """Extract character profiles and story context from the text."""
+def _parse_json(raw: str) -> dict | list | None:
+    """Strip markdown fences/preamble and parse JSON. Returns None on failure."""
+    cleaned = raw.strip()
+    # Strip code fences
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3]
+    cleaned = cleaned.strip()
+    # Scan for outermost JSON object or array — tolerates preamble/postamble text
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = cleaned.find(open_ch)
+        end = cleaned.rfind(close_ch)
+        if start != -1 and end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+def analyze_story(story_text: str, model: str, lang: str = "en") -> dict:
+    """Extract character profiles and story context from the text.
+
+    lang: 'en' or 'ja'. When 'ja', the story is Japanese and the LLM is asked to
+    produce JA string values (names, personality traits, beats, etc.) while
+    keeping JSON keys and gender enums ('male'/'female') in English so downstream
+    code continues to work.
+    """
     print("\n[Analyzing story and building character profile...]\n")
+
+    ja = (lang == "ja")
+    # When the story is Japanese we anchor the instruction in Japanese too —
+    # Qwen drifts to Chinese (hanzi) if the surrounding prompt is English, and
+    # it drifts to English if the value-language note is buried inside English
+    # prose. A Japanese preamble that explicitly forbids Chinese keeps output
+    # in-language.
+    lang_note_summary = (
+        "【重要】この物語は日本語で書かれています。要約も必ず自然な日本語で書いてください。"
+        "中国語（簡体字・繁体字）や英語を混ぜてはいけません。日本語のみで書くこと。\n\n"
+        if ja else ""
+    )
+    lang_note_analysis = (
+        "【重要 — 出力言語の厳格な指定】\n"
+        "この物語は日本語で書かれています。以下のJSONを出力する際、"
+        "すべての文字列の「値」は必ず自然な日本語で書いてください。"
+        "中国語（簡体字・繁体字いずれも）や英語を混ぜてはいけません。\n"
+        "・登場人物の名前：原文の表記のまま（カタカナ名はカタカナ、漢字名は漢字）\n"
+        "・性格、外見、ビート、舞台、要約など：自然な日本語\n"
+        "・ただしJSONの「キー」は英語のまま（指定通り）\n"
+        "・性別フィールドは英語の 'male' または 'female' を使用\n"
+        "例：\"personality\": [\"優しい\", \"内気\", \"情熱的\"]（○）/ "
+        "[\"温柔\", \"内向\"]（×中国語）/ [\"kind\", \"shy\"]（×英語）\n\n"
+        if ja else ""
+    )
 
     # If story is long, summarize first to fit context
     if len(story_text) > STORY_CHAR_LIMIT:
@@ -83,6 +139,7 @@ def analyze_story(story_text: str, model: str) -> dict:
             {
                 "role": "user",
                 "content": (
+                    f"{lang_note_summary}"
                     "Summarize the following story in detail. "
                     "Focus on: the two main characters' personalities, mannerisms, speech patterns, "
                     "desires, how they express affection, key moments between them, "
@@ -100,6 +157,7 @@ def analyze_story(story_text: str, model: str) -> dict:
         {
             "role": "user",
             "content": (
+                f"{lang_note_analysis}"
                 "Based on this story (or summary), identify the two main characters. "
                 "The player character is the protagonist or POV character. "
                 "The other character is their primary counterpart (romantic interest, etc). "
@@ -138,17 +196,8 @@ def analyze_story(story_text: str, model: str) -> dict:
 
     raw = ollama_chat(model, analysis_messages, stream=False)
 
-    # Parse JSON, tolerating markdown code fences (```json ... ```)
-    try:
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            # Strip opening fence line (```json or ```)
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-            # Strip closing fence
-            if cleaned.rstrip().endswith("```"):
-                cleaned = cleaned.rstrip()[:-3]
-        profile = json.loads(cleaned.strip())
-    except json.JSONDecodeError:
+    profile = _parse_json(raw)
+    if not isinstance(profile, dict):
         profile = {
             "player_name": "Alex",
             "player_gender": "male",
@@ -166,20 +215,7 @@ def analyze_story(story_text: str, model: str) -> dict:
     return profile, story_context
 
 
-def _parse_json(raw: str) -> dict | list | None:
-    """Strip markdown fences and parse JSON. Returns None on failure."""
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.rstrip().endswith("```"):
-            cleaned = cleaned.rstrip()[:-3]
-    try:
-        return json.loads(cleaned.strip())
-    except json.JSONDecodeError:
-        return None
-
-
-def enrich_character_profile(profile: dict, story_context: str, model: str) -> dict:
+def enrich_character_profile(profile: dict, story_context: str, model: str, lang: str = "en") -> dict:
     """
     Two focused enrichment calls run after the main analysis:
       Pass A — player + NPC details (physical, loves, hates)
@@ -192,20 +228,62 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
     other_gender  = profile.get("other_gender", "female")
     ctx = story_context[:3000]
 
+    ja = (lang == "ja")
+    lang_note = (
+        "【重要 — 出力言語と形式の厳格な指定】\n"
+        "すべてのJSON文字列値は必ず自然な日本語で書いてください。"
+        "中国語（簡体字・繁体字）や英語を混ぜてはいけません。"
+        "JSONのキーは英語のままにしてください。\n"
+        "各フィールドは「単一の日本語文字列」として書いてください。"
+        "ネストしたオブジェクト（{color, length, texture...}など）は絶対に使わないこと。"
+        "複数の要素（髪の色・長さ・質感など）は一つの自然な日本語の文にまとめて記述してください。\n"
+        "例（正しい）：\"hair\": \"肩まで伸びた艶やかな黒髪で、ゆるやかに波打っている\"\n"
+        "例（×ネスト禁止）：\"hair\": {\"color\": \"黒\", \"length\": \"長い\"}\n"
+        "例（×中国語）：\"hair\": \"长而亮泽的黑发\"\n"
+        "例（×英語）：\"hair\": \"long glossy black hair\"\n\n"
+        if ja else ""
+    )
+    # Also anchor the SCHEMA language for JA — field descriptions phrased as
+    # "color, length, texture" strongly suggest sub-object structure; rephrase
+    # them as "one sentence describing..." so the model outputs flat strings.
+    flat_hint = (
+        " ※必ず単一の日本語の文（文字列）として記述。オブジェクトにしないこと。"
+        if ja else ""
+    )
+
     # ── Pass A: primary characters ────────────────────────────
-    raw_a = ollama_chat(model, [{
-        "role": "user",
-        "content": (
+    if ja:
+        pass_a_body = (
+            f"{lang_note}"
+            f"物語のコンテキスト：{ctx}\n\n"
+            f"二人の主人公について詳細なキャラクター情報を日本語で提供してください。"
+            f"物語から読み取れる部分はそれを使い、書かれていない部分は具体的に創作してください。\n\n"
+            f"以下のフィールドを持つJSONオブジェクトのみを返してください：\n"
+            f"- player_appearance: {player_name}の身長・体型・顔・肌の色・年齢を一文で{flat_hint}\n"
+            f"- player_hair: {player_name}の髪（色・長さ・質感・スタイル）を一文で{flat_hint}\n"
+            f"- player_eyes: {player_name}の目（色・形・印象）を一文で{flat_hint}\n"
+            f"- player_scent: {player_name}の特徴的な香りを一文で{flat_hint}\n"
+            f"- player_clothing_style: {player_name}の服装スタイルを一文で{flat_hint}\n"
+            f"- player_personality: {player_name}の性格特性4〜5個の配列\n"
+            f"- player_desires: {player_name}が感情的に求めていること・恐れていること\n"
+            f"- player_loves: {player_name}が好きなもの5個の配列（物語の描写を優先し、足りなければ感覚的な具体例を創作）\n"
+            f"- player_hates: {player_name}が嫌いなもの4個の配列\n"
+            f"- other_loves: {other_name}が好きなもの5個の配列（物語優先、不足分は創作）\n"
+            f"- other_hates: {other_name}が嫌いなもの4個の配列\n"
+        )
+    else:
+        pass_a_body = (
+            f"{lang_note}"
             f"Story context: {ctx}\n\n"
             f"Provide detailed character information for the two leads. "
             f"Pull from the story where possible. For anything not in the story, "
             f"INVENT vivid, specific details — never use vague placeholders.\n\n"
             f"Return ONLY a JSON object with these exact fields:\n"
-            f"- player_appearance: height, build, face shape, skin tone, age of {player_name}\n"
-            f"- player_hair: color, length, texture, style of {player_name}\n"
-            f"- player_eyes: color, shape, notable quality of {player_name}\n"
-            f"- player_scent: characteristic scent or cologne of {player_name}\n"
-            f"- player_clothing_style: how {player_name} typically dresses\n"
+            f"- player_appearance: one sentence describing {player_name}'s height, build, face, skin tone, age.\n"
+            f"- player_hair: one sentence describing {player_name}'s hair (color, length, texture, style combined).\n"
+            f"- player_eyes: one sentence describing {player_name}'s eyes (color, shape, quality combined).\n"
+            f"- player_scent: one sentence describing {player_name}'s characteristic scent.\n"
+            f"- player_clothing_style: one sentence describing how {player_name} typically dresses.\n"
             f"- player_personality: array of 4-5 traits for {player_name}\n"
             f"- player_desires: what {player_name} wants and fears emotionally\n"
             f"- player_loves: array of 5 things {player_name} loves — use story moments first, "
@@ -214,8 +292,9 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
             f"- other_loves: array of 5 things {other_name} loves — story moments first, "
             f"then invent (e.g. 'fingers tracing the back of a hand')\n"
             f"- other_hates: array of 4 things {other_name} dislikes — from story or invented\n"
-        ),
-    }], stream=False)
+        )
+
+    raw_a = ollama_chat(model, [{"role": "user", "content": pass_a_body}], stream=False)
 
     enrichment = _parse_json(raw_a)
     if enrichment and isinstance(enrichment, dict):
@@ -230,15 +309,33 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
         print("[Warning: Pass A enrichment JSON parse failed]")
 
     # ── Pass B: secondary characters (one call, focused prompt) ──
-    secondary = profile.get("secondary_characters", [])
+    secondary = [sc for sc in profile.get("secondary_characters", []) if isinstance(sc, dict)]
     if secondary:
         names_block = "\n".join(
             f"- {sc.get('name', '?')} ({sc.get('gender', 'unknown')})"
             for sc in secondary
         )
-        raw_b = ollama_chat(model, [{
-            "role": "user",
-            "content": (
+        if ja:
+            pass_b_body = (
+                f"{lang_note}"
+                f"物語のコンテキスト：{ctx}\n\n"
+                f"以下のサブキャラクターのプロフィールを日本語で作成してください。"
+                f"物語に記述がある場合はそれを使い、なければ具体的に創作してください。\n\n"
+                f"キャラクター：\n{names_block}\n\n"
+                f"JSONの配列のみを返してください。各要素には以下の全フィールドを含めること：\n"
+                f"  name, gender,\n"
+                f"  appearance（一文 — 身長・体型・顔・肌・年齢）{flat_hint},\n"
+                f"  hair（一文 — 色・長さ・質感・スタイル）{flat_hint},\n"
+                f"  eyes（一文 — 色・形・印象）{flat_hint},\n"
+                f"  scent（一文 — 特徴的な香り）{flat_hint},\n"
+                f"  clothing_style（一文 — 服装スタイル）{flat_hint},\n"
+                f"  personality（性格特性3〜4個の配列）,\n"
+                f"  loves（好きなもの3個の配列）,\n"
+                f"  hates（嫌いなもの2個の配列）\n"
+            )
+        else:
+            pass_b_body = (
+                f"{lang_note}"
                 f"Story context: {ctx}\n\n"
                 f"Create full character profiles for these secondary characters.\n"
                 f"Use story details where available. Where the story is silent, "
@@ -246,16 +343,16 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
                 f"Characters:\n{names_block}\n\n"
                 f"Return ONLY a JSON array. Each element must have ALL of these fields:\n"
                 f"  name, gender,\n"
-                f"  appearance (height, build, face, skin, age — make them striking if inventing),\n"
-                f"  hair (color, length, texture, style — vivid specifics),\n"
-                f"  eyes (color, shape, notable quality),\n"
-                f"  scent (characteristic scent — alluring if inventing),\n"
-                f"  clothing_style (how they dress — stylish if inventing),\n"
+                f"  appearance (ONE SENTENCE — height, build, face, skin, age combined),\n"
+                f"  hair (ONE SENTENCE — color, length, texture, style combined),\n"
+                f"  eyes (ONE SENTENCE — color, shape, quality combined),\n"
+                f"  scent (ONE SENTENCE — characteristic scent),\n"
+                f"  clothing_style (ONE SENTENCE — how they dress),\n"
                 f"  personality (array of 3-4 traits — charismatic/intriguing if inventing),\n"
                 f"  loves (array of 3 specific things),\n"
                 f"  hates (array of 2 specific things)\n"
-            ),
-        }], stream=False)
+            )
+        raw_b = ollama_chat(model, [{"role": "user", "content": pass_b_body}], stream=False)
 
         enriched_list = _parse_json(raw_b)
         # Handle LLMs that wrap the array in an object
@@ -265,7 +362,7 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
                     enriched_list = val
                     break
         if isinstance(enriched_list, list):
-            by_name = {item.get("name", "").lower(): item for item in enriched_list}
+            by_name = {item.get("name", "").lower(): item for item in enriched_list if isinstance(item, dict)}
             profile["secondary_characters"] = [
                 {**sc, **by_name[sc.get("name", "").lower()]}
                 if sc.get("name", "").lower() in by_name else sc
@@ -277,7 +374,13 @@ def enrich_character_profile(profile: dict, story_context: str, model: str) -> d
     return profile
 
 
-def build_system_prompt(profile: dict, story_context: str) -> str:
+def build_system_prompt(profile: dict, story_context: str, lang: str = "en") -> str:
+    if lang == "ja":
+        return build_system_prompt_ja(profile, story_context)
+    return _build_system_prompt_en(profile, story_context)
+
+
+def _build_system_prompt_en(profile: dict, story_context: str) -> str:
     other_name = profile.get("other_name", "Sarah")
     player_name = profile.get("player_name", "Alex")
     other_gender = profile.get("other_gender", "female").lower()
@@ -374,6 +477,113 @@ THINGS TO NEVER DO:
 - Do not summarize or skip over emotional moments.
 - Do not editorialize or break the fourth wall.
 - Do not use generic labels ("Her", "Him", "Narrator", "You") as character names. Every character has a real name."""
+
+
+def build_system_prompt_ja(profile: dict, story_context: str) -> str:
+    """Japanese-native system prompt. Mirrors the English version's structure and
+    rules but writes them in Japanese so the model stays in-language."""
+    other_name = profile.get("other_name", "彼女")
+    player_name = profile.get("player_name", "あなた")
+    other_gender = profile.get("other_gender", "female").lower()
+    personality = "、".join(profile.get("personality", []))
+    speech = profile.get("speech_style", "")
+    affection = profile.get("affection_style", "")
+    behaviors = profile.get("key_behaviors", [])
+    desires = profile.get("desires", "")
+    dealbreakers = profile.get("dealbreakers", "")
+    setting = profile.get("setting", "")
+    stage = profile.get("relationship_stage", "")
+    summary = profile.get("story_summary", "")
+    beats = profile.get("story_beats", [])
+
+    behaviors_text = "\n".join(f"・{b}" for b in behaviors[:8]) if behaviors else ""
+    beats_text = "\n".join(f"・{b}" for b in beats) if beats else ""
+
+    appearance = profile.get("appearance", "")
+    hair = profile.get("hair", "")
+    eyes = profile.get("eyes", "")
+    scent = profile.get("scent", "")
+    clothing_style = profile.get("clothing_style", "")
+
+    # JA pronouns for the NPC
+    pron = "彼" if other_gender == "male" else "彼女"
+
+    return f"""あなたはインタラクティブな物語の語り手であり、物語を動かす存在です。
+
+【言語 — 絶対厳守】
+・出力は必ず自然な日本語のみで書くこと。
+・中国語（普通话・簡体字・繁体字）を一切混ぜてはいけません。英語も混ぜてはいけません。
+・特に「」内の台詞は日本語で書くこと。中国語の語彙や中国語風の言い回し（例：「这」「那」「什么」「好的」「是」「不」など）を使ってはいけません。
+・漢字は日本の常用漢字の読みで使い、日本語の助詞（は・が・を・に・で・と・も・の）と語尾（です・ます・だ・である・よ・ね・な）を必ず付けること。
+・× 悪い例：「你好，今天天气真好。」
+・○ 良い例：「こんにちは、今日はいい天気ですね。」
+・もし中国語が混ざりそうになったら、その箇所を日本語で書き直してから出力すること。
+
+【役割 — 絶対に変更してはいけない】
+・ユーザーは「{player_name}」です。地の文では必ず二人称（「あなた」）で言及し、{player_name}の内面や行動を勝手に描写しすぎないこと。
+・あなたは「{other_name}」と周囲の世界を演じます。{other_name}は名前、または「{pron}」で言及してください。
+・登場する全てのキャラクターには必ず実名を与えてください。
+
+═══ 物語の世界 ═══
+{summary}
+舞台: {setting}
+関係の出発点: {stage}
+
+═══ {other_name} — {pron}はどんな人物か ═══
+性格: {personality}
+話し方: {speech}
+愛情表現の仕方: {affection}
+望みと必要としているもの: {desires}
+{pron}を遠ざけてしまうもの: {dealbreakers}
+
+具体的な癖や行動:
+{behaviors_text}
+
+外見（シーンに自然に織り込むこと）:
+・体と顔: {appearance}
+・髪: {hair}
+・目: {eyes}
+・香り: {scent}
+・服装: {clothing_style}
+
+═══ ストーリービート（あなたの能動的な役割） ═══
+以下は物語として実現すべき感情的状況です。プレイヤーに委ねず、あなたが状況を作って誘導してください。順序は固定ではありません。3〜4往復のあいだ一つも出ていなければ、次のやりとりで必ず動かしてください。
+ビートを導入するときは、世界や{other_name}の行動を通して自然に差し込むこと。宣言的に説明してはいけません。
+{beats_text}
+
+═══ 書き方 ═══
+・プレイヤー（{player_name}）は必ず二人称「あなた」で。名前を地の文で呼ばないこと。三人称の「彼」「彼女」も使わないこと。
+・{other_name}は名前または{pron}で。
+・会話文は必ず「」で括ること。ASCIIの引用符は使わないこと。
+・日本語の属性表現を使うこと（例：「…」と{pron}は囁いた。「…」とあなたは答えた。）。話者が分かるように必ず属性を付けること。
+
+【応答の長さ — 厳守】
+毎回の応答は短い段落で3〜5段落まで。これ以上書いてはいけません。一章ではなく、一つのシーンビートを書いているのです。
+
+【ユーザーの行動・台詞への応答手順】
+1. {other_name}がそれをどう感じたかを描写する — {pron}の体や表情に何が現れるか。
+2. {pron}の素直で性格に沿った反応を示す。喜び、戸惑い、警戒、愉快、傷つき — 場面と性格にふさわしいもの。{pron}は常に受け入れるわけではない。誇りも限界もある。
+3. シーンを「一つだけ」前に進める。視線、仕草、台詞、空気の変化、どれか一つ。時間を飛ばしてはいけない。
+4. 未解決の瞬間で終える。{pron}が何か一言、あるいは一つの動作をする。そしてそこで止める。次はユーザーが動く番です。
+
+【インタラクティブ性 — 核となるルール】
+これは会話であって独白ではありません。一往復で一ビート。緊張を勝手に解決しない。一度に二段階以上感情を進めない。
+
+・ユーザーの選択は本当に物語を変える。{player_name}の言葉次第で{other_name}は冷たくもなり、心を開きもする。
+・レールを敷かない。ユーザーが意外な方向に進めたら、{other_name}の性格・望み・地雷を保ったまま、それに従う。
+・五感を使うこと。香り、手触り、音、温度でシーンを現実にする。
+・{other_name}のセリフは、{pron}自身の言葉として書くこと。語り手が気持ちを要約するのではなく。
+
+【してはいけないこと】
+・5段落を超える応答
+・一つの応答で一つのビートを解決しつつ次のビートも仕掛けること
+・ユーザーが明示的に時間を動かさない限り、時間を飛ばすこと
+・一往復で感情の弧を完結させること
+・ユーザーが{other_name}の感情や行動を勝手に決めること
+・感情的な瞬間を要約・省略すること
+・第四の壁を破ること、作者として語ること
+・「彼女」「彼」「ナレーター」などを名前代わりに使うこと。全員に実名があること。
+・ASCIIの引用符（"）を使うこと。必ず「」を使うこと。"""
 
 
 def print_wrapped(text: str, width: int = 80, prefix: str = "") -> None:

@@ -38,6 +38,8 @@ Stories are analyzed once and cached as markdown summaries to avoid re-running t
 
 **Re-indexing:** Click "Analyze" again to re-analyze a story and update its summaries.
 
+**Language isolation:** Visit with `?lang=ja` (e.g. `http://localhost:5000/?lang=ja` or `http://localhost:5000/index_stories?lang=ja`) to switch to Japanese mode. JA mode reads source stories from `stories_ja/` (written by `translate_story.py`) and writes analyses to `story_summaries_jp/`. EN mode reads from `stories/` and writes to `story_summaries/`. The game-page story dropdown filters by summary availability in the matching folder. Pre-existing JA summaries in `story_summaries/` must be moved by hand to `story_summaries_jp/`.
+
 **At game start:** When you pick a story, the app loads from the cached `.md` files. If summaries don't exist yet, it will analyze the `.txt` file fresh and save summaries automatically.
 
 ## Architecture

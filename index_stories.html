@@ -40,6 +40,33 @@
         .story-list {
             margin-bottom: 30px;
         }
+        .lang-picker {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+        .lang-picker label {
+            font-size: 13px;
+            color: #333;
+            font-weight: 500;
+        }
+        .lang-picker select {
+            padding: 6px 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
+            cursor: pointer;
+        }
+        .lang-picker .hint {
+            font-size: 11px;
+            color: #888;
+            margin-left: auto;
+        }
         .story-item {
             display: flex;
             align-items: center;
@@ -102,6 +129,33 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .btn-translate {
+            background: #6a1b9a;
+            color: white;
+        }
+        .btn-translate:hover:not(:disabled) {
+            background: #4a148c;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(106, 27, 154, 0.3);
+        }
+        .btn-translate:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .translate-log {
+            display: none;
+            margin-top: 8px;
+            padding: 8px 10px;
+            background: #1a1a2e;
+            color: #a0d4a0;
+            font-family: monospace;
+            font-size: 11px;
+            border-radius: 6px;
+            max-height: 120px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
         .btn-back {
             background: #f5f5f5;
             color: #333;
@@ -163,6 +217,21 @@
         </div>
 
         <div id="content" style="display: none;">
+            <div class="lang-picker">
+                <label for="langSelect">Source language:</label>
+                <select id="langSelect">
+                    <option value="en" selected>English</option>
+                    <option value="ja">日本語 (Japanese)</option>
+                </select>
+                <span class="hint">applied to the next Analyze</span>
+            </div>
+            <div class="lang-picker">
+                <label for="modelSelect">Model:</label>
+                <select id="modelSelect">
+                    <option value="">Loading…</option>
+                </select>
+                <span class="hint">auto-selects by language</span>
+            </div>
             <div class="story-list" id="storyList">
                 <!-- Stories will be loaded here -->
             </div>
@@ -181,10 +250,19 @@
     </div>
 
     <script>
+        const URL_LANG = new URLSearchParams(location.search).get('lang') === 'ja' ? 'ja' : 'en';
+        (function initLangLock() {
+            const sel = document.getElementById('langSelect');
+            if (!sel) return;
+            sel.value = URL_LANG;
+            const wrap = sel.closest('.lang-picker');
+            if (wrap) wrap.style.display = 'none';
+        })();
+
         async function loadStories() {
             document.getElementById('loading').style.display = 'block';
             try {
-                const res = await fetch('/stories');
+                const res = await fetch(`/stories?lang=${URL_LANG}`);
                 const data = await res.json();
                 const stories = data.stories || [];
 
@@ -205,10 +283,16 @@
                     item.className = 'story-item';
                     item.id = `story-${storyName}`;
 
-                    // Check if already analyzed
                     const hasAnalysis = await checkIfAnalyzed(storyName);
-                    if (hasAnalysis) {
-                        item.classList.add('analyzed');
+                    if (hasAnalysis) item.classList.add('analyzed');
+
+                    let translateBtn = '';
+                    let translateLog = '';
+                    if (URL_LANG === 'en') {
+                        const hasTranslation = await checkIfTranslated(storyName);
+                        const tLabel = hasTranslation ? 'Re-translate' : 'Translate →日';
+                        translateBtn = `<button class="btn-translate" id="tbtn-${storyName}" onclick="translateStory('${storyName}')">${tLabel}</button>`;
+                        translateLog = `<div class="translate-log" id="tlog-${storyName}"></div>`;
                     }
 
                     item.innerHTML = `
@@ -219,8 +303,15 @@
                         <button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">
                             Analyze
                         </button>
+                        ${translateBtn}
                     `;
                     list.appendChild(item);
+                    if (translateLog) {
+                        const logEl = document.createElement('div');
+                        logEl.className = 'translate-log';
+                        logEl.id = `tlog-${storyName}`;
+                        list.appendChild(logEl);
+                    }
                 }
             } catch (err) {
                 document.getElementById('loading').style.display = 'none';
@@ -230,11 +321,75 @@
 
         async function checkIfAnalyzed(storyName) {
             try {
-                const res = await fetch(`/check-analysis/${storyName}`);
+                const res = await fetch(`/check-analysis/${storyName}?lang=${URL_LANG}`);
                 const data = await res.json();
                 return data.analyzed;
             } catch {
                 return false;
+            }
+        }
+
+        async function checkIfTranslated(storyName) {
+            try {
+                const res = await fetch(`/check-translation/${storyName}`);
+                const data = await res.json();
+                return data.translated;
+            } catch {
+                return false;
+            }
+        }
+
+        async function translateStory(storyName) {
+            const btn = document.getElementById(`tbtn-${storyName}`);
+            const log = document.getElementById(`tlog-${storyName}`);
+
+            btn.disabled = true;
+            btn.textContent = 'Translating…';
+            log.textContent = '';
+            log.style.display = 'block';
+
+            try {
+                const res = await fetch('/translate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ story: storyName })
+                });
+
+                if (!res.ok) {
+                    const d = await res.json();
+                    throw new Error(d.error || 'Translation failed');
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const lines = buf.split('\n');
+                    buf = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const payload = JSON.parse(line.slice(6));
+                        if (payload.error) throw new Error(payload.error);
+                        if (payload.done) {
+                            btn.textContent = 'Re-translate';
+                            btn.disabled = false;
+                            log.textContent += '\n✓ Done';
+                            log.scrollTop = log.scrollHeight;
+                            return;
+                        }
+                        log.textContent += payload + '\n';
+                        log.scrollTop = log.scrollHeight;
+                    }
+                }
+            } catch (err) {
+                log.textContent += `\n✗ Error: ${err.message}`;
+                btn.textContent = 'Translate →日';
+                btn.disabled = false;
+                log.scrollTop = log.scrollHeight;
             }
         }
 
@@ -248,10 +403,14 @@
             status.innerHTML = '<span class="loading" style="margin-right: 4px;"></span>Analyzing...';
 
             try {
+                const lang = document.getElementById('langSelect').value;
+                const model = document.getElementById('modelSelect').value;
+                const body = { story: storyName, lang };
+                if (model) body.model = model;
                 const res = await fetch('/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ story: storyName })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
 
@@ -282,8 +441,46 @@
             }, 5000);
         }
 
+        // Model loading + language-based auto-default
+        async function loadModels() {
+            try {
+                const res = await fetch('/models');
+                const data = await res.json();
+                const sel = document.getElementById('modelSelect');
+                sel.innerHTML = '';
+                (data.models || []).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m; opt.textContent = m;
+                    sel.appendChild(opt);
+                });
+                applyLangDefault();
+            } catch {
+                document.getElementById('modelSelect').innerHTML =
+                    '<option value="">(could not load)</option>';
+            }
+        }
+
+        function pickModel(preferred) {
+            const sel = document.getElementById('modelSelect');
+            const opts = Array.from(sel.options);
+            for (const key of preferred) {
+                const match = opts.find(o => o.value.toLowerCase().includes(key));
+                if (match) { sel.value = match.value; return true; }
+            }
+            return false;
+        }
+
+        function applyLangDefault() {
+            const lang = document.getElementById('langSelect').value;
+            if (lang === 'ja') pickModel(['qwen-ja', 'qwen']);
+            else               pickModel(['nemo', 'mistral']);
+        }
+
+        document.getElementById('langSelect').addEventListener('change', applyLangDefault);
+
         // Load on page load
         loadStories();
+        loadModels();
     </script>
 </body>
 </html>

@@ -10,6 +10,8 @@ import json
 import random
 import re
 import struct
+import subprocess
+import sys
 import threading
 import urllib.request
 import urllib.error
@@ -19,7 +21,17 @@ from flask import Flask, request, Response, send_file, stream_with_context
 from story import analyze_story, enrich_character_profile, build_system_prompt, list_models, OLLAMA_URL
 
 STORIES_DIR = Path(__file__).parent / "stories"
+STORIES_DIR_JA = Path(__file__).parent / "stories_ja"
 SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
+SUMMARIES_DIR_JA = Path(__file__).parent / "story_summaries_jp"
+
+
+def _summaries_dir(lang: str) -> Path:
+    return SUMMARIES_DIR_JA if (lang or "").lower() == "ja" else SUMMARIES_DIR
+
+
+def _stories_dir(lang: str) -> Path:
+    return STORIES_DIR_JA if (lang or "").lower() == "ja" else STORIES_DIR
 KOKORO_MODEL = Path(__file__).parent / "kokoro_models" / "kokoro-v1.0.onnx"
 KOKORO_VOICES = Path(__file__).parent / "kokoro_models" / "voices-v1.0.bin"
 
@@ -39,6 +51,32 @@ SECONDARY_MALE_CHARACTER_LANG    = "en-us"
 SECONDARY_FEMALE_CHARACTER_VOICE = "af_aoede"
 SECONDARY_FEMALE_CHARACTER_LANG  = "en-us"
 
+# Japanese voice set (Kokoro v1.0 jf_/jm_ prefixes). Used when session["lang"] == "ja".
+JA_NARRATOR_VOICE                = "jf_alpha"
+JA_PRIMARY_MALE_VOICE            = "jm_kumo"
+JA_PRIMARY_FEMALE_VOICE          = "jf_gongitsune"
+JA_SECONDARY_MALE_VOICE          = "jm_kumo"      # Kokoro ships only one jm_ voice
+JA_SECONDARY_FEMALE_VOICE        = "jf_nezumi"
+JA_LANG                          = "ja"
+
+
+def _voice_for(speaker: str, lang: str) -> tuple[str, str]:
+    """Return (voice, lang) for a speaker role. Narrator/secondary are language-global;
+    player/other voices are resolved from session for primaries."""
+    if lang == "ja":
+        mapping = {
+            "narrator":          (JA_NARRATOR_VOICE,         JA_LANG),
+            "secondary_male":    (JA_SECONDARY_MALE_VOICE,   JA_LANG),
+            "secondary_female":  (JA_SECONDARY_FEMALE_VOICE, JA_LANG),
+        }
+    else:
+        mapping = {
+            "narrator":          (NARRATOR_VOICE,                   NARRATOR_LANG),
+            "secondary_male":    (SECONDARY_MALE_CHARACTER_VOICE,   SECONDARY_MALE_CHARACTER_LANG),
+            "secondary_female": (SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG),
+        }
+    return mapping.get(speaker, mapping["narrator"])
+
 app = Flask(__name__)
 
 # ── Kokoro TTS (lazy-loaded, thread-safe) ─────────────────────
@@ -53,6 +91,22 @@ def get_kokoro():
                 from kokoro_onnx import Kokoro
                 _kokoro = Kokoro(str(KOKORO_MODEL), str(KOKORO_VOICES))
     return _kokoro
+
+
+# Misaki JA G2P — kokoro-onnx does NOT auto-use misaki; it always phonemizes
+# via espeak-ng, which mangles Japanese. We phonemize JA text ourselves with
+# misaki, then pass IPA phonemes to Kokoro with is_phonemes=True.
+_ja_g2p = None
+_ja_g2p_lock = threading.Lock()
+
+def get_ja_g2p():
+    global _ja_g2p
+    if _ja_g2p is None:
+        with _ja_g2p_lock:
+            if _ja_g2p is None:
+                from misaki import ja
+                _ja_g2p = ja.JAG2P()
+    return _ja_g2p
 
 
 def _float32_to_wav(samples, sample_rate: int = 24000) -> bytes:
@@ -197,52 +251,119 @@ def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun:
     return "other"  # default to primary NPC
 
 
-def _character_section(role_label: str, name: str, data: dict) -> str:
+# Localized heading/fallback labels for the generated markdown files.
+_MD_LABELS = {
+    "en": {
+        "appearance":  "Appearance",
+        "hair":        "Hair",
+        "eyes":        "Eyes",
+        "scent":       "Scent",
+        "style":       "Style",
+        "personality": "Personality",
+        "loves":       "What They Love",
+        "hates":       "What They Hate",
+        "desires":     "Desires & Fears",
+        "speaks":      "How They Speak",
+        "affection":   "How They Show Affection",
+        "behaviors":   "Key Behaviors",
+        "pushes_away": "What Pushes Them Away",
+        "setting":     "Setting",
+        "starting":    "Starting Point",
+        "summary":     "Summary",
+        "beats":       "Story Beats",
+        "not_specified": "_Not specified_",
+        "not_provided":  "_Not provided_",
+        "none_provided": "_None provided_",
+        "traits_sep":  ", ",
+    },
+    "ja": {
+        "appearance":  "外見",
+        "hair":        "髪",
+        "eyes":        "目",
+        "scent":       "香り",
+        "style":       "服装",
+        "personality": "性格",
+        "loves":       "好きなもの",
+        "hates":       "嫌いなもの",
+        "desires":     "望みと恐れ",
+        "speaks":      "話し方",
+        "affection":   "愛情の示し方",
+        "behaviors":   "特徴的な行動",
+        "pushes_away": "遠ざけるもの",
+        "setting":     "舞台",
+        "starting":    "関係の出発点",
+        "summary":     "あらすじ",
+        "beats":       "ストーリービート",
+        "not_specified": "_未記載_",
+        "not_provided":  "_未記載_",
+        "none_provided": "_なし_",
+        "traits_sep":  "、",
+    },
+}
+
+
+def _character_section(role_label: str, name: str, data: dict, lang: str = "en") -> str:
     """Build a single character section for character.md."""
+    L = _MD_LABELS.get(lang, _MD_LABELS["en"])
+    sep = L["traits_sep"]
+
+    def flatten(val) -> str:
+        """Collapse dict/list values into a readable string. LLMs sometimes
+        return nested objects for fields we expected to be flat strings
+        (e.g. hair: {color, length, texture}); render those as prose rather
+        than exposing the raw Python repr."""
+        if isinstance(val, dict):
+            return sep.join(str(v).strip() for v in val.values() if v)
+        if isinstance(val, list):
+            return sep.join(str(v).strip() for v in val if v)
+        return str(val).strip() if val is not None else ""
+
     def bullet_list(items) -> str:
         if isinstance(items, list) and items:
-            return "\n".join(f"- {i}" for i in items)
-        return "_Not specified_"
+            return "\n".join(f"- {flatten(i)}" for i in items if i)
+        return L["not_specified"]
 
-    def field(val, fallback="_Not specified_") -> str:
-        return val if val and str(val).strip() else fallback
+    def field(val) -> str:
+        s = flatten(val)
+        return s if s else L["not_specified"]
 
     traits = data.get("personality", [])
-    traits_str = ", ".join(traits) if traits else "_Not specified_"
+    traits_str = sep.join(flatten(t) for t in traits if t) if traits else L["not_specified"]
 
     return f"""# {role_label}: {name}
 
-## Appearance
+## {L["appearance"]}
 {field(data.get('appearance'))}
 
-### Hair
+### {L["hair"]}
 {field(data.get('hair'))}
 
-### Eyes
+### {L["eyes"]}
 {field(data.get('eyes'))}
 
-### Scent
+### {L["scent"]}
 {field(data.get('scent'))}
 
-### Style
+### {L["style"]}
 {field(data.get('clothing_style'))}
 
-## Personality
+## {L["personality"]}
 {traits_str}
 
-## What They Love
+## {L["loves"]}
 {bullet_list(data.get('loves'))}
 
-## What They Hate
+## {L["hates"]}
 {bullet_list(data.get('hates'))}
 
-## Desires & Fears
+## {L["desires"]}
 {field(data.get('desires'))}
 """
 
 
-def _profile_to_markdown(profile: dict) -> str:
+def _profile_to_markdown(profile: dict, lang: str = "en") -> str:
     """Convert an analyzed profile dict to role-labeled character sections."""
+    L = _MD_LABELS.get(lang, _MD_LABELS["en"])
     player_name   = profile.get("player_name", "Player")
     player_gender = profile.get("player_gender", "male").lower()
     other_name    = profile.get("other_name", "Unknown")
@@ -278,21 +399,21 @@ def _profile_to_markdown(profile: dict) -> str:
     }
 
     sections = [
-        _character_section(player_role, player_name, player_data),
-        _character_section(other_role, other_name, other_data),
+        _character_section(player_role, player_name, player_data, lang=lang),
+        _character_section(other_role, other_name, other_data, lang=lang),
     ]
 
     # Add a speech/affection block to the NPC section
     speech_block = ""
     if profile.get("speech_style"):
-        speech_block += f"\n## How They Speak\n{profile['speech_style']}\n"
+        speech_block += f"\n## {L['speaks']}\n{profile['speech_style']}\n"
     if profile.get("affection_style"):
-        speech_block += f"\n## How They Show Affection\n{profile['affection_style']}\n"
+        speech_block += f"\n## {L['affection']}\n{profile['affection_style']}\n"
     behaviors = profile.get("key_behaviors", [])
     if behaviors:
-        speech_block += "\n## Key Behaviors\n" + "\n".join(f"- {b}" for b in behaviors) + "\n"
+        speech_block += f"\n## {L['behaviors']}\n" + "\n".join(f"- {b}" for b in behaviors) + "\n"
     if profile.get("dealbreakers"):
-        speech_block += f"\n## What Pushes Them Away\n{profile['dealbreakers']}\n"
+        speech_block += f"\n## {L['pushes_away']}\n{profile['dealbreakers']}\n"
     if speech_block:
         sections[1] = sections[1].rstrip() + "\n" + speech_block
 
@@ -312,7 +433,7 @@ def _profile_to_markdown(profile: dict) -> str:
             "hates":       sc.get("hates", []),
             "desires":     sc.get("desires"),
         }
-        sections.append(_character_section(sc_role, sc_name, sc_data))
+        sections.append(_character_section(sc_role, sc_name, sc_data, lang=lang))
 
     return "\n\n---\n\n".join(sections)
 
@@ -322,7 +443,7 @@ def _trim_characters(profile: dict) -> dict:
     Enforce role limits: at most one SECONDARY_MALE and one SECONDARY_FEMALE.
     Keeps the first male and first female secondary character; drops the rest.
     """
-    secondary = profile.get("secondary_characters", [])
+    secondary = [sc for sc in profile.get("secondary_characters", []) if isinstance(sc, dict)]
     if not secondary:
         return profile
     kept_male = None
@@ -337,37 +458,42 @@ def _trim_characters(profile: dict) -> dict:
     return profile
 
 
-def _profile_to_story_markdown(profile: dict) -> str:
+def _profile_to_story_markdown(profile: dict, lang: str = "en") -> str:
     """Build story.md from profile fields using role labels instead of character names."""
+    L = _MD_LABELS.get(lang, _MD_LABELS["en"])
     player_gender = profile.get("player_gender", "male").lower()
     other_gender  = profile.get("other_gender", "female").lower()
     player_role   = "PRIMARY_MALE" if player_gender == "male" else "PRIMARY_FEMALE"
     other_role    = "PRIMARY_MALE" if other_gender  == "male" else "PRIMARY_FEMALE"
 
-    # Replace character names with role labels in the summary text
-    summary = profile.get("story_summary", "_Not provided_")
+    # Replace character names with role labels in the summary text.
+    # The word-boundary \b doesn't work for CJK, so for JA names use plain replace.
+    summary = profile.get("story_summary", L["not_provided"])
     player_name = profile.get("player_name", "")
     other_name  = profile.get("other_name", "")
-    if player_name:
-        summary = re.sub(rf'\b{re.escape(player_name)}\b', player_role, summary)
-    if other_name:
-        summary = re.sub(rf'\b{re.escape(other_name)}\b', other_role, summary)
+    if lang == "ja":
+        if player_name: summary = summary.replace(player_name, player_role)
+        if other_name:  summary = summary.replace(other_name,  other_role)
+    else:
+        if player_name: summary = re.sub(rf'\b{re.escape(player_name)}\b', player_role, summary)
+        if other_name:  summary = re.sub(rf'\b{re.escape(other_name)}\b',  other_role,  summary)
 
     beats = profile.get("story_beats", [])
-    beats_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(beats)) if beats else "_None provided_"
+    beats_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(beats)) if beats else L["none_provided"]
+    title = "物語" if lang == "ja" else "Story"
 
-    return f"""# Story
+    return f"""# {title}
 
-## Setting
-{profile.get('setting', '_Not provided_')}
+## {L["setting"]}
+{profile.get('setting', L["not_provided"])}
 
-## Starting Point
-{profile.get('relationship_stage', '_Not provided_')}
+## {L["starting"]}
+{profile.get('relationship_stage', L["not_provided"])}
 
-## Summary
+## {L["summary"]}
 {summary}
 
-## Story Beats
+## {L["beats"]}
 {beats_text}
 """
 
@@ -445,6 +571,253 @@ def _parse_segments(
     return segments
 
 
+# ── Japanese segmenter ────────────────────────────────────────
+# Verb stems covering speech, reactions, and voice-adjacent acts. Any trailing
+# hiragana is consumed so 言う/言った/言って/囁いた/etc. all match.
+_JA_SPEECH_VERB_STEMS = (
+    r"(?:"
+    r"言|話|答|聞|尋|訊|呟|囁|叫|怒鳴|呼|告|続|返|"
+    r"笑|微笑|頷|ため息|息|"
+    r"口を開|口にし|声を"
+    r")"
+)
+_JA_SPEECH_VERBS = rf"{_JA_SPEECH_VERB_STEMS}[\u3040-\u309F]*"
+# Attribution signal — either:
+#   (a) quotative と/って at the start of the post-quote clause  (strongest JA signal), or
+#   (b) a speech verb anywhere in the clause (covers pre-attribution + action beats).
+_JA_ATTR_LEADING = re.compile(r'^\s*(?:と|って)')
+_JA_ATTR_VERB_RE = re.compile(_JA_SPEECH_VERBS)
+def _ja_has_attribution(clause: str) -> bool:
+    return bool(_JA_ATTR_LEADING.match(clause) or _JA_ATTR_VERB_RE.search(clause))
+
+
+def _detect_speaker_ja(narr_before: str, narr_after: str,
+                       player_name: str, other_name: str, other_gender: str,
+                       secondary_characters: dict[str, str] | None = None) -> str:
+    """
+    Japanese attribution is overwhelmingly POST-quote: 「…」と彼女は囁いた。
+    narr_after is the primary signal; narr_before is a fallback for less-common
+    pre-attribution forms (彼女は囁いた。「…」).
+    """
+    secondary_characters = secondary_characters or {}
+    other_gender = (other_gender or "female").lower()
+
+    sent_end = re.search(r'[。！？]', narr_after)
+    attr = narr_after[:sent_end.end()] if sent_end else narr_after[:80]
+
+    if not _ja_has_attribution(attr):
+        # Fallback: final clause of pre-narration
+        last_end = 0
+        for m in re.finditer(r'[。！？]', narr_before):
+            last_end = m.end()
+        pre_clause = narr_before[last_end:] if last_end else narr_before[-60:]
+        if _ja_has_attribution(pre_clause):
+            attr = pre_clause
+        else:
+            return "other"
+
+    # Name-based attribution (authoritative). Subject particles は/が/も or comma/space.
+    def name_role(name: str, role: str):
+        if name and re.search(rf'{re.escape(name)}(?:は|が|も|、|\s)', attr):
+            return role
+        return None
+
+    if (r := name_role(player_name, "player")): return r
+    if (r := name_role(other_name, "other")):   return r
+    known = {n for n in (other_name, player_name) if n}
+    for sc_name, sc_gender in secondary_characters.items():
+        if sc_name in {n.lower() for n in known}:
+            continue
+        role = "secondary_male" if sc_gender == "male" else "secondary_female"
+        if re.search(rf'{re.escape(sc_name)}(?:は|が|も|、|\s)', attr):
+            return role
+
+    # Pronouns: 彼女 (she) must be checked before 彼 (he) since it contains 彼.
+    if "彼女" in attr:
+        return "other" if other_gender == "female" else "secondary_female"
+    if re.search(r'彼(?!女)', attr):
+        return "other" if other_gender == "male" else "secondary_male"
+
+    # Second-person markers — rare in JA fiction but decisive when present.
+    if "あなた" in attr or re.search(r'君(?!.*さん)', attr):
+        return "player"
+
+    return "other"
+
+
+def _parse_segments_ja(
+    text: str,
+    player_name: str = "",
+    other_name: str = "",
+    other_gender: str = "female",
+    secondary_characters: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Japanese equivalent of _parse_segments. Recognizes 「」 and 『』 quotes."""
+    clean = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    clean = re.sub(r"<[^>]+>", "", clean)
+
+    segments: list[tuple[str, str]] = []
+    # 「…」 primary speech, 『…』 nested/emphasized. Also accept stray ASCII "..." the LLM may emit.
+    pattern = re.compile(r'「[^「」]{1,500}」|『[^『』]{1,500}』|"[^"]{1,500}"')
+    last = 0
+    for m in pattern.finditer(clean):
+        narr_before = clean[last:m.start()].strip()
+        if narr_before:
+            segments.append((narr_before, "narrator"))
+
+        narr_after = clean[m.end():m.end() + 120]
+        speaker = _detect_speaker_ja(narr_before, narr_after,
+                                     player_name, other_name, other_gender,
+                                     secondary_characters)
+        segments.append((m.group(), speaker))
+        last = m.end()
+
+    tail = clean[last:].strip()
+    if tail:
+        segments.append((tail, "narrator"))
+    return segments
+
+
+# ── TTS chunking ──────────────────────────────────────────────
+# Kokoro caps each synthesis call at 510 phoneme tokens. Phoneme density
+# varies wildly: kanji-heavy Japanese can expand 1 char → 4-5 phonemes via
+# kana lookup, so the char budget has to be conservative. A 90-char budget
+# empirically keeps kanji-dense passages under the cap. On overflow we catch
+# the error and recursively split, so the budget is a soft target, not a
+# hard guarantee.
+_TTS_MAX_CHARS_JA = 90
+_TTS_MAX_CHARS_EN = 380
+
+
+def _chunk_for_tts(text: str, lang: str) -> list[str]:
+    """Split a TTS segment on sentence boundaries so each piece fits Kokoro's
+    per-call token cap. For JA, split on 。！？ (and comma 、 as fallback).
+    For EN, split on .!? (and comma , as fallback)."""
+    max_chars = _TTS_MAX_CHARS_JA if lang == "ja" else _TTS_MAX_CHARS_EN
+    if len(text) <= max_chars:
+        return [text]
+
+    sent_end_re = re.compile(r'[。！？]' if lang == "ja" else r'[.!?]')
+    soft_break_re = re.compile(r'[、]' if lang == "ja" else r'[,;:]')
+
+    # First pass: hard sentence breaks.
+    pieces: list[str] = []
+    buf = ""
+    i = 0
+    for m in sent_end_re.finditer(text):
+        sentence = text[i:m.end()]
+        if len(buf) + len(sentence) > max_chars and buf:
+            pieces.append(buf)
+            buf = sentence
+        else:
+            buf += sentence
+        i = m.end()
+    tail = text[i:]
+    if tail:
+        buf += tail
+    if buf:
+        pieces.append(buf)
+
+    # Second pass: any piece still too long gets split on soft breaks,
+    # then on hard char limit as last resort.
+    final: list[str] = []
+    for p in pieces:
+        if len(p) <= max_chars:
+            final.append(p)
+            continue
+        sub = ""
+        last_i = 0
+        for m in soft_break_re.finditer(p):
+            part = p[last_i:m.end()]
+            if len(sub) + len(part) > max_chars and sub:
+                final.append(sub)
+                sub = part
+            else:
+                sub += part
+            last_i = m.end()
+        sub += p[last_i:]
+        # Last resort: slice any remaining over-long piece.
+        while len(sub) > max_chars:
+            final.append(sub[:max_chars])
+            sub = sub[max_chars:]
+        if sub:
+            final.append(sub)
+
+    return [s.strip() for s in final if s.strip()]
+
+
+# Language-annotation patterns some models (Qwen especially) like to inject
+# into narration — e.g. "(in Japanese) 彼女は…" or "（中国語で）...". Kokoro
+# reads them literally, so scrub before synthesis.
+_LANG_TAG_RE = re.compile(
+    r"""
+      [（(\[]\s*                              # opening bracket: ( [ （
+      (?:in\s+)?                              # optional "in "
+      (?:japanese|chinese|english|korean|
+         日本語|中国語|英語|韓国語)
+      (?:\s*[で:：])?                         # optional particle/colon inside
+      \s*[)）\]]                              # closing bracket
+      \s*[:：]?\s*                            # consume any trailing colon too
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _scrub_for_tts(text: str) -> str:
+    """Remove inline language annotations the LLM may have emitted."""
+    cleaned = _LANG_TAG_RE.sub("", text)
+    # Strip leftover leading punctuation/whitespace from removed tags.
+    cleaned = re.sub(r'^[\s:：、,;；\-—–]+', '', cleaned)
+    return cleaned.strip()
+
+
+def _synthesize_with_fallback(kokoro, text: str, voice: str, lang: str, depth: int = 0):
+    """Call kokoro.create, and on Kokoro's 510-token overflow error, split the
+    text in half and retry recursively. Yields audio samples for each piece.
+
+    For JA, phonemize with misaki first and feed phonemes directly to Kokoro
+    (kokoro-onnx's built-in phonemizer is espeak-ng, which garbles Japanese
+    with multilingual 'In Chinese/In Japanese' fallback annotations)."""
+    if lang == "ja":
+        phonemes = get_ja_g2p()(text)
+        # JAG2P returns either a str or (str, tokens); normalize.
+        if isinstance(phonemes, tuple):
+            phonemes = phonemes[0]
+        try:
+            samples, _ = kokoro.create(phonemes, voice=voice, speed=1.0,
+                                       lang="ja", is_phonemes=True)
+            yield samples
+            return
+        except IndexError as e:
+            if "out of bounds" not in str(e) or depth > 6 or len(text) < 8:
+                raise
+    else:
+        try:
+            samples, _ = kokoro.create(text, voice=voice, speed=1.0, lang=lang)
+            yield samples
+            return
+        except IndexError as e:
+            if "out of bounds" not in str(e) or depth > 6 or len(text) < 8:
+                raise
+
+    # Split roughly in half at the nearest sentence/comma/space boundary.
+    mid = len(text) // 2
+    split_at = mid
+    for delta in range(min(mid, 40)):
+        for offset in (mid - delta, mid + delta):
+            if 0 < offset < len(text) and text[offset] in "。！？.!?、,; ":
+                split_at = offset + 1
+                break
+        else:
+            continue
+        break
+    left, right = text[:split_at].strip(), text[split_at:].strip()
+    if left:
+        yield from _synthesize_with_fallback(kokoro, left, voice, lang, depth + 1)
+    if right:
+        yield from _synthesize_with_fallback(kokoro, right, voice, lang, depth + 1)
+
+
 # ── In-memory session store (single user) ─────────────────────
 # All character fields are None until /start assigns them.
 session = {
@@ -462,6 +835,7 @@ session = {
     "secondary_characters": {},
     "story_beats":    [],
     "beat_index":     0,
+    "lang":           "en",   # "en" | "ja" — selects segmenter + voice set
 }
 
 
@@ -482,8 +856,17 @@ def models():
 
 @app.route("/stories")
 def stories():
-    files = sorted(p.name for p in STORIES_DIR.glob("*.txt"))
-    return {"stories": files}
+    lang = (request.args.get("lang") or "en").lower()
+    analyzed_only = request.args.get("analyzed") == "1"
+    src_dir = _stories_dir(lang)
+    all_txt = sorted(p.name for p in src_dir.glob("*.txt")) if src_dir.exists() else []
+    if analyzed_only:
+        summaries = _summaries_dir(lang)
+        if summaries.exists():
+            available = {p.name.replace("_character.md", "")
+                         for p in summaries.glob("*_character.md")}
+            all_txt = [s for s in all_txt if s.replace(".txt", "") in available]
+    return {"stories": all_txt}
 
 
 @app.route("/analyze", methods=["POST"])
@@ -495,11 +878,16 @@ def analyze():
     if not story_name:
         return {"error": "No story name provided"}, 400
 
+    analyze_lang = (data.get("lang") or "en").lower()
+    if analyze_lang not in ("en", "ja"):
+        analyze_lang = "en"
+    stories_src = _stories_dir(analyze_lang)
+
     # Sanitize path to prevent directory traversal
-    story_file = STORIES_DIR / f"{story_name}.txt"
+    story_file = stories_src / f"{story_name}.txt"
     try:
         story_file = story_file.resolve()
-        story_file.relative_to(STORIES_DIR.resolve())
+        story_file.relative_to(stories_src.resolve())
     except (ValueError, RuntimeError):
         return {"error": "Invalid story path"}, 400
 
@@ -507,33 +895,33 @@ def analyze():
         return {"error": f"Story not found: {story_name}.txt"}, 404
 
     try:
-        # Create summaries directory if needed
-        SUMMARIES_DIR.mkdir(exist_ok=True)
-
         # Read and analyze story
         story_text = story_file.read_text(encoding="utf-8", errors="replace")
         model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
-        profile, story_context = analyze_story(story_text, model)
+        summaries_dir = _summaries_dir(analyze_lang)
+        summaries_dir.mkdir(exist_ok=True)
+
+        profile, story_context = analyze_story(story_text, model, lang=analyze_lang)
 
         # Enforce role limits before enrichment (avoid wasting LLM calls on dropped chars)
         profile = _trim_characters(profile)
 
         # Second pass: fill in physical descriptions, loves/hates, secondary details
-        profile = enrich_character_profile(profile, story_context, model)
+        profile = enrich_character_profile(profile, story_context, model, lang=analyze_lang)
 
         # Save character summary as markdown
-        char_md = _profile_to_markdown(profile)
-        char_file = SUMMARIES_DIR / f"{story_name}_character.md"
+        char_md = _profile_to_markdown(profile, lang=analyze_lang)
+        char_file = summaries_dir / f"{story_name}_character.md"
         char_file.write_text(char_md, encoding="utf-8")
 
         # Build story.md from profile fields using role names (not character names)
-        story_md = _profile_to_story_markdown(profile)
-        story_file_md = SUMMARIES_DIR / f"{story_name}_story.md"
+        story_md = _profile_to_story_markdown(profile, lang=analyze_lang)
+        story_file_md = summaries_dir / f"{story_name}_story.md"
         story_file_md.write_text(story_md, encoding="utf-8")
 
         # Save enriched profile as JSON (for game use)
-        profile_file = SUMMARIES_DIR / f"{story_name}_profile.json"
+        profile_file = summaries_dir / f"{story_name}_profile.json"
         profile_file.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
 
         return {
@@ -550,10 +938,68 @@ def check_analysis(story_name):
     """Check if a story has been analyzed (summaries exist)."""
     try:
         story_name = story_name.strip()
-        char_file = SUMMARIES_DIR / f"{story_name}_character.md"
+        lang = (request.args.get("lang") or "en").lower()
+        char_file = _summaries_dir(lang) / f"{story_name}_character.md"
         return {"analyzed": char_file.exists()}
     except Exception:
         return {"analyzed": False}
+
+
+@app.route("/check-translation/<story_name>")
+def check_translation(story_name):
+    """Check if an English story has already been translated to JA."""
+    try:
+        story_name = story_name.strip().replace(".txt", "")
+        translated = STORIES_DIR_JA / f"{story_name}.txt"
+        return {"translated": translated.exists()}
+    except Exception:
+        return {"translated": False}
+
+
+@app.route("/translate", methods=["POST"])
+def translate():
+    """Stream translate_story.py output as SSE for a given EN story."""
+    data = request.json or {}
+    story_name = (data.get("story") or "").strip().replace(".txt", "")
+    model = data.get("model") or "qwen-ja"
+
+    if not story_name:
+        return {"error": "No story name provided"}, 400
+
+    story_file = STORIES_DIR / f"{story_name}.txt"
+    try:
+        story_file = story_file.resolve()
+        story_file.relative_to(STORIES_DIR.resolve())
+    except (ValueError, RuntimeError):
+        return {"error": "Invalid story path"}, 400
+
+    if not story_file.exists():
+        return {"error": f"Story not found: {story_name}.txt"}, 404
+
+    translate_script = Path(__file__).parent / "translate_story.py"
+
+    def generate():
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", str(translate_script), str(story_file), "--model", model],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env={**__import__("os").environ, "PYTHONUNBUFFERED": "1"},
+            )
+            for line in proc.stdout:
+                yield f"data: {json.dumps(line.rstrip())}\n\n"
+            proc.wait()
+            if proc.returncode == 0:
+                yield "data: {\"done\": true}\n\n"
+            else:
+                yield f"data: {{\"error\": \"Process exited with code {proc.returncode}\"}}\n\n"
+        except Exception as e:
+            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.route("/start", methods=["POST"])
@@ -561,17 +1007,22 @@ def start():
     data = request.json
     model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
-    all_stories = list(STORIES_DIR.glob("*.txt"))
+    story_lang = (data.get("lang") or "en").lower()
+    if story_lang not in ("en", "ja"):
+        story_lang = "en"
+
+    stories_src = _stories_dir(story_lang)
+    all_stories = list(stories_src.glob("*.txt")) if stories_src.exists() else []
     if not all_stories:
-        return {"error": f"No .txt files found in {STORIES_DIR}"}, 400
+        return {"error": f"No .txt files found in {stories_src}"}, 400
 
     story_pick = data.get("story", "random")
     if story_pick and story_pick != "random":
         # Remove .txt extension if included
         story_name = story_pick.replace(".txt", "")
-        chosen = (STORIES_DIR / f"{story_name}.txt").resolve()
+        chosen = (stories_src / f"{story_name}.txt").resolve()
         try:
-            chosen.relative_to(STORIES_DIR.resolve())
+            chosen.relative_to(stories_src.resolve())
         except ValueError:
             return {"error": "Invalid story path"}, 400
         if not chosen.exists():
@@ -580,10 +1031,11 @@ def start():
         chosen = random.choice(all_stories)
         story_name = chosen.stem
 
-    # Check if summaries exist for this story
-    char_file = SUMMARIES_DIR / f"{story_name}_character.md"
-    profile_file = SUMMARIES_DIR / f"{story_name}_profile.json"
-    story_md_file = SUMMARIES_DIR / f"{story_name}_story.md"
+    # Check if summaries exist for this story (in the language-scoped folder)
+    summaries_dir = _summaries_dir(story_lang)
+    char_file = summaries_dir / f"{story_name}_character.md"
+    profile_file = summaries_dir / f"{story_name}_profile.json"
+    story_md_file = summaries_dir / f"{story_name}_story.md"
 
     try:
         if profile_file.exists() and story_md_file.exists():
@@ -591,14 +1043,21 @@ def start():
             profile = json.loads(profile_file.read_text(encoding="utf-8"))
             story_context = story_md_file.read_text(encoding="utf-8")
         else:
-            # Analyze fresh
             story_text = chosen.read_text(encoding="utf-8", errors="replace")
-            profile, story_context = analyze_story(story_text, model)
+            profile, story_context = analyze_story(story_text, model, lang=story_lang)
     except Exception as e:
         return {"error": str(e)}, 500
 
-    _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Nora", "Rose", "Sarah", "Vera"]
-    _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
+    # story_lang already parsed above; drives segmenter + voice set.
+    if story_lang == "ja":
+        _FEMALE_NAMES = ["美咲", "さくら", "ゆい", "あかり", "花音", "千尋", "葵", "凛", "七海", "結衣"]
+        _MALE_NAMES   = ["翔太", "健", "直樹", "涼", "蓮", "悠斗", "大輝", "颯", "拓海", "遥斗"]
+        _PRONOUN_STOPS = ("you", "her", "she", "him", "he", "they",
+                          "あなた", "彼", "彼女")
+    else:
+        _FEMALE_NAMES = ["Amelia", "Clara", "Elena", "Isla", "Lyra", "Mara", "Nora", "Rose", "Sarah", "Vera"]
+        _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
+        _PRONOUN_STOPS = ("you", "her", "she", "him", "he", "they")
 
     # If the user requested a specific gender, swap player/other roles when needed.
     preferred_gender = data.get("player_gender", "auto").lower()
@@ -619,36 +1078,39 @@ def start():
 
     # Ensure both characters have real names
     other_name = profile.get("other_name", "").strip()
-    if not other_name or other_name.lower() in ("her", "she", "him", "he", "they"):
+    if not other_name or other_name.lower() in _PRONOUN_STOPS:
         profile["other_name"] = random.choice(_FEMALE_NAMES if other_gender == "female" else _MALE_NAMES)
 
     player_name = profile.get("player_name", "").strip()
-    if not player_name or player_name.lower() in ("you", "her", "she", "him", "he", "they"):
+    if not player_name or player_name.lower() in _PRONOUN_STOPS:
         profile["player_name"] = random.choice(_MALE_NAMES if player_gender == "male" else _FEMALE_NAMES)
 
     # Assign PRIMARY voices deterministically by gender.
     # Secondary characters that enter the scene use SECONDARY voices (handled in /tts).
-    if other_gender == "male":
-        other_voice, other_lang = PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+    if story_lang == "ja":
+        primary_m = (JA_PRIMARY_MALE_VOICE,   JA_LANG)
+        primary_f = (JA_PRIMARY_FEMALE_VOICE, JA_LANG)
+        secondary_m = (JA_SECONDARY_MALE_VOICE,   JA_LANG)
+        secondary_f = (JA_SECONDARY_FEMALE_VOICE, JA_LANG)
     else:
-        other_voice, other_lang = PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+        primary_m = (PRIMARY_MALE_CHARACTER_VOICE,   PRIMARY_MALE_CHARACTER_LANG)
+        primary_f = (PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG)
+        secondary_m = (SECONDARY_MALE_CHARACTER_VOICE,   SECONDARY_MALE_CHARACTER_LANG)
+        secondary_f = (SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG)
+
+    other_voice, other_lang = primary_m if other_gender == "male" else primary_f
 
     # When both characters share a gender, use the secondary voice for the player
     # so they're distinguishable in TTS.
     if player_gender == other_gender:
-        if player_gender == "male":
-            player_voice, player_lang = SECONDARY_MALE_CHARACTER_VOICE, SECONDARY_MALE_CHARACTER_LANG
-        else:
-            player_voice, player_lang = SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG
-    elif player_gender == "male":
-        player_voice, player_lang = PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+        player_voice, player_lang = secondary_m if player_gender == "male" else secondary_f
     else:
-        player_voice, player_lang = PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+        player_voice, player_lang = primary_m if player_gender == "male" else primary_f
 
     other_pronoun  = "he" if other_gender == "male" else "she"
     player_pronoun = "you"  # player is always narrated in second person
 
-    system_prompt = build_system_prompt(profile, story_context)
+    system_prompt = build_system_prompt(profile, story_context, lang=story_lang)
 
     # Build secondary character registry: {name_lower: gender}
     secondary_characters = {}
@@ -689,6 +1151,7 @@ def start():
     session["secondary_characters"] = secondary_characters
     session["story_beats"]    = profile.get("story_beats", [])
     session["beat_index"]     = 0
+    session["lang"]           = story_lang
 
     return {
         "name":        profile["other_name"],
@@ -705,6 +1168,7 @@ def _ollama_stream(messages):
         "model": session["model"],
         "messages": messages,
         "stream": True,
+        "options": {"num_ctx": 8192},
     }).encode()
 
     req = urllib.request.Request(
@@ -763,26 +1227,42 @@ def suggest():
 
     # Use a neutral system message so the model isn't locked into story-narrator mode,
     # which causes it to ignore JSON instructions after a few turns.
-    suggest_system = (
-        "You are a creative writing assistant. Your only job is to suggest player actions. "
-        "You must respond with ONLY a valid JSON array of exactly 3 strings. No prose, no markdown."
-    )
+    is_ja = session.get("lang", "en") == "ja"
+    if is_ja:
+        suggest_system = (
+            "あなたは創作アシスタントです。プレイヤーの行動候補を提案するのが唯一の役割です。"
+            "必ず有効なJSON配列（3つの日本語文字列）のみを返してください。"
+            "前置きやマークダウン、中国語、英語は一切混ぜないこと。"
+        )
+        suggest_prompt = (
+            "このシーンで、プレイヤーが次に取り得る行動・台詞を3つ、自然な日本語で提案してください。"
+            "それぞれ1〜2文。プレイヤー（「私」または主語省略）の視点で書くこと。"
+            "トーンを変えること：1つは大胆・直接的、1つは優しく温かい、1つは慎重・控えめ。"
+            "必ず日本語（中国語や英語を混ぜない）。"
+            "JSON配列のみを返すこと。コードフェンスや説明文は一切含めない。\n"
+            '例：["彼女の手を取る。", "「教えて」と静かに言う。", "視線を逸らし、言葉を探す。"]'
+        )
+    else:
+        suggest_system = (
+            "You are a creative writing assistant. Your only job is to suggest player actions. "
+            "You must respond with ONLY a valid JSON array of exactly 3 strings. No prose, no markdown."
+        )
+        suggest_prompt = (
+            "Suggest exactly 3 brief actions or responses the player could take next in this scene. "
+            "Each must be 1–2 sentences, written in first person as something the player does or says. "
+            "Vary the tone: one bold/direct, one tender/warm, one cautious/indirect. "
+            "Return ONLY a JSON array of 3 strings — no prose, no markdown fences, no commentary. "
+            'Example: ["I reach for her hand.", "\\"Tell me,\\" I say softly.", "I look away, unsure."]'
+        )
     recent = [m for m in session["messages"] if m["role"] != "system"]
     context = recent[-6:]
-
-    suggest_prompt = (
-        "Suggest exactly 3 brief actions or responses the player could take next in this scene. "
-        "Each must be 1–2 sentences, written in first person as something the player does or says. "
-        "Vary the tone: one bold/direct, one tender/warm, one cautious/indirect. "
-        "Return ONLY a JSON array of 3 strings — no prose, no markdown fences, no commentary. "
-        'Example: ["I reach for her hand.", "\\"Tell me,\\" I say softly.", "I look away, unsure."]'
-    )
     messages = [{"role": "system", "content": suggest_system}] + context + [{"role": "user", "content": suggest_prompt}]
 
     payload = json.dumps({
         "model": session["model"],
         "messages": messages,
         "stream": False,
+        "options": {"num_ctx": 8192},
     }).encode()
 
     req = urllib.request.Request(
@@ -867,36 +1347,52 @@ def tts():
     try:
         import numpy as np
         kokoro = get_kokoro()
-        segments = _parse_segments(
-            text,
-            player_name=session["player_name"] or "",
-            player_pronoun=session["player_pronoun"] or "you",
-            other_name=session["other_name"] or "",
-            other_pronoun=session["other_pronoun"] or "she",
-            secondary_characters=session.get("secondary_characters", {}),
-        )
+        story_lang = session.get("lang", "en")
+        other_gender = "male" if (session.get("other_pronoun") == "he") else "female"
+
+        if story_lang == "ja":
+            segments = _parse_segments_ja(
+                text,
+                player_name=session["player_name"] or "",
+                other_name=session["other_name"] or "",
+                other_gender=other_gender,
+                secondary_characters=session.get("secondary_characters", {}),
+            )
+        else:
+            segments = _parse_segments(
+                text,
+                player_name=session["player_name"] or "",
+                player_pronoun=session["player_pronoun"] or "you",
+                other_name=session["other_name"] or "",
+                other_pronoun=session["other_pronoun"] or "she",
+                secondary_characters=session.get("secondary_characters", {}),
+            )
 
         SR = 24000
         silence = np.zeros(int(SR * 0.18), dtype=np.float32)
         parts = []
 
         for seg_text, speaker in segments:
-            seg_text = seg_text.strip()
+            seg_text = _scrub_for_tts(seg_text.strip())
             if not seg_text:
                 continue
+            # Log what's actually going to Kokoro — helps diagnose leaked
+            # annotations, unexpected prefixes, etc.
+            print(f"[tts/{speaker}] {seg_text[:80]}{'…' if len(seg_text) > 80 else ''}")
             if speaker == "player":
                 voice, lang = session["player_voice"], session["player_lang"]
             elif speaker == "other":
                 voice, lang = session["other_voice"], session["other_lang"]
-            elif speaker == "secondary_male":
-                voice, lang = SECONDARY_MALE_CHARACTER_VOICE, SECONDARY_MALE_CHARACTER_LANG
-            elif speaker == "secondary_female":
-                voice, lang = SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG
-            else:  # narrator
-                voice, lang = NARRATOR_VOICE, NARRATOR_LANG
-            samples, _ = kokoro.create(seg_text, voice=voice, speed=1.0, lang=lang)
-            parts.append(samples)
-            parts.append(silence)
+            else:  # narrator / secondary_male / secondary_female
+                voice, lang = _voice_for(speaker, story_lang)
+            # Kokoro caps each synthesis call at 510 phoneme tokens. Chunk on
+            # sentence boundaries first, then fall back to recursive splitting
+            # on overflow (kanji-heavy JA can still blow the budget even after
+            # sentence-level chunking).
+            for chunk in _chunk_for_tts(seg_text, story_lang):
+                for piece in _synthesize_with_fallback(kokoro, chunk, voice, lang):
+                    parts.append(piece)
+                    parts.append(silence)
 
         if not parts:
             return {"error": "Nothing to synthesize"}, 400

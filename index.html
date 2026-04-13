@@ -406,6 +406,14 @@
       </select>
     </div>
 
+    <div>
+      <label>Language</label>
+      <select id="lang-select">
+        <option value="en" selected>English</option>
+        <option value="ja">日本語 (Japanese)</option>
+      </select>
+    </div>
+
     <button class="btn-primary" id="btn-start">Begin Story</button>
     <div id="setup-status"></div>
   </div>
@@ -443,6 +451,15 @@
 <script>
 const $ = id => document.getElementById(id);
 
+const URL_LANG = new URLSearchParams(location.search).get('lang') === 'ja' ? 'ja' : 'en';
+(function initLangLock() {
+  const sel = document.getElementById('lang-select');
+  if (!sel) return;
+  sel.value = URL_LANG;
+  const wrap = sel.closest('div');
+  if (wrap) wrap.style.display = 'none';
+})();
+
 let charName = 'Her';
 let streaming = false;
 let muted = false;
@@ -452,7 +469,7 @@ let suggestController = null;
 // ── Load stories ─────────────────────────────────────
 async function loadStories() {
   try {
-    const res = await fetch('/stories');
+    const res = await fetch(`/stories?lang=${URL_LANG}&analyzed=1`);
     const data = await res.json();
     const sel = $('story-select');
     sel.innerHTML = '<option value="random">— Random —</option>';
@@ -478,13 +495,37 @@ async function loadModels() {
       const opt = document.createElement('option');
       opt.value = m;
       opt.textContent = m;
-      if (m === 'hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M') opt.selected = true;
       sel.appendChild(opt);
     });
+    // Apply the language-appropriate default after options are loaded
+    applyLangDefault();
   } catch {
     $('model-select').innerHTML = '<option value="hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M">nemo latest</option>';
   }
 }
+
+// Pick the first model whose name contains any of the preferred substrings.
+function pickModel(preferred) {
+  const sel = $('model-select');
+  const opts = Array.from(sel.options);
+  for (const key of preferred) {
+    const match = opts.find(o => o.value.toLowerCase().includes(key));
+    if (match) { sel.value = match.value; return true; }
+  }
+  return false;
+}
+
+function applyLangDefault() {
+  const lang = $('lang-select').value;
+  if (lang === 'ja') pickModel(['qwen']);
+  else               pickModel(['nemo', 'mistral']);
+}
+
+// Re-default the model whenever the language changes.
+document.addEventListener('DOMContentLoaded', () => {
+  const langSel = $('lang-select');
+  if (langSel) langSel.addEventListener('change', applyLangDefault);
+});
 
 // ── Start ────────────────────────────────────────────
 $('btn-start').addEventListener('click', startStory);
@@ -493,6 +534,7 @@ async function startStory() {
   const model = $('model-select').value;
   const story = $('story-select').value;
   const playerGender = $('gender-select').value;
+  const lang = $('lang-select').value;
 
   $('btn-start').disabled = true;
   setStatus('Analyzing story and building character…');
@@ -501,7 +543,7 @@ async function startStory() {
     const res = await fetch('/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, story, player_gender: playerGender }),
+      body: JSON.stringify({ model, story, player_gender: playerGender, lang }),
     });
 
     const data = await res.json();

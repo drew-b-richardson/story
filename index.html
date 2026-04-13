@@ -37,46 +37,165 @@
     align-items: center;
     justify-content: flex-start;
     flex: 1;
-    padding: 2rem;
-    gap: 1.5rem;
     overflow-y: auto;
   }
 
-  #setup-screen h1 {
+  /* Step panels */
+  .setup-step {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    flex: 1;
+    padding: 2rem 1.5rem;
+    gap: 1.5rem;
+  }
+  .setup-step.active { display: flex; }
+
+  .setup-step h1 {
     font-size: 2rem;
+    font-weight: normal;
+    color: var(--accent2);
+    letter-spacing: 0.05em;
+    text-align: center;
+  }
+
+  .setup-step p.subtitle {
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.95rem;
+    text-align: center;
+  }
+
+  /* Gender picker */
+  .gender-buttons {
+    display: flex;
+    gap: 1.2rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+  }
+
+  .gender-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, transform 0.1s;
+    font-family: inherit;
+    min-width: 110px;
+  }
+
+  .gender-btn:hover { transform: translateY(-2px); background: var(--surface2); }
+  .gender-btn:active { transform: translateY(0); }
+
+  .gender-btn .symbol {
+    font-size: 2.8rem;
+    line-height: 1;
+  }
+
+  .gender-btn .label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+
+  .gender-btn.female { border-color: #c06080; }
+  .gender-btn.female:hover { border-color: #e080a0; background: #2a1520; }
+  .gender-btn.female .symbol { color: #e080a0; }
+
+  .gender-btn.male { border-color: #406090; }
+  .gender-btn.male:hover { border-color: #6090c0; background: #151a2a; }
+  .gender-btn.male .symbol { color: #6090c0; }
+
+  .gender-btn.random { border-color: var(--border); }
+  .gender-btn.random:hover { border-color: var(--muted); }
+  .gender-btn.random .symbol { color: var(--muted); }
+
+  /* Story list step */
+  #step-stories {
+    padding-top: 1rem;
+  }
+
+  .stories-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+    max-width: 600px;
+  }
+
+  .btn-back {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+  .btn-back:hover { border-color: var(--accent); color: var(--accent2); }
+
+  .stories-header h2 {
+    font-size: 1.1rem;
     font-weight: normal;
     color: var(--accent2);
     letter-spacing: 0.05em;
   }
 
-  #setup-screen p.subtitle {
-    color: var(--muted);
-    font-style: italic;
-    font-size: 0.95rem;
+  #story-list {
+    width: 100%;
+    max-width: 600px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    padding-bottom: 2rem;
   }
 
-  .setup-card {
+  .story-card {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 2rem;
+    padding: 1.1rem 1.4rem;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    text-align: left;
+    font-family: inherit;
+    color: var(--text);
     width: 100%;
-    max-width: 560px;
-    display: flex;
-    flex-direction: column;
-    gap: 1.2rem;
   }
 
-  label {
-    display: block;
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--muted);
+  .story-card:hover {
+    border-color: var(--accent);
+    background: var(--surface2);
+  }
+
+  .story-card:disabled { opacity: 0.4; cursor: default; }
+
+  .story-card .story-title {
+    font-size: 1rem;
+    color: var(--accent2);
     margin-bottom: 0.4rem;
+    text-transform: capitalize;
   }
 
-  select, textarea {
+  .story-card .story-summary {
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-style: italic;
+    line-height: 1.55;
+  }
+
+  textarea {
     width: 100%;
     background: var(--surface2);
     border: 1px solid var(--border);
@@ -87,24 +206,12 @@
     padding: 0.6rem 0.8rem;
     outline: none;
     transition: border-color 0.2s;
-  }
-
-  select:focus, textarea:focus {
-    border-color: var(--accent);
-  }
-
-  textarea {
     resize: vertical;
     min-height: 42px;
     line-height: 1.6;
   }
 
-  .file-row {
-    display: flex;
-    gap: 0.6rem;
-  }
-
-  .file-row input[type="file"] { display: none; }
+  textarea:focus { border-color: var(--accent); }
 
   button {
     cursor: pointer;
@@ -126,23 +233,14 @@
 
   .btn-secondary:hover:not(:disabled) { background: var(--border); }
 
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
-    font-size: 1rem;
-    padding: 0.8rem;
-    width: 100%;
-    letter-spacing: 0.05em;
-  }
-
-  .btn-primary:hover:not(:disabled) { opacity: 0.85; }
-
   #setup-status {
     text-align: center;
     font-style: italic;
     color: var(--muted);
     font-size: 0.9rem;
     min-height: 1.4em;
+    width: 100%;
+    max-width: 600px;
   }
 
   /* ── Chat screen ── */
@@ -379,44 +477,38 @@
 
 <!-- ═══════════════════════════════════════════════════ SETUP -->
 <div id="setup-screen">
-  <h1>Story Roleplay</h1>
-  <p class="subtitle">A story will be chosen for you. Step inside it.</p>
 
-  <div class="setup-card">
-    <div>
-      <label>Story</label>
-      <select id="story-select">
-        <option value="random">— Random —</option>
-      </select>
+  <!-- Step 1: Gender picker -->
+  <div class="setup-step active" id="step-gender">
+    <h1>Story Roleplay</h1>
+    <p class="subtitle">Step inside a story. Who will you be?</p>
+    <div class="gender-buttons">
+      <button class="gender-btn female" data-gender="female">
+        <span class="symbol">♀</span>
+        <span class="label">Woman</span>
+      </button>
+      <button class="gender-btn male" data-gender="male">
+        <span class="symbol">♂</span>
+        <span class="label">Man</span>
+      </button>
+      <button class="gender-btn random" data-gender="auto">
+        <span class="symbol">✦</span>
+        <span class="label">Random</span>
+      </button>
     </div>
+  </div>
 
-    <div>
-      <label>Play as</label>
-      <select id="gender-select">
-        <option value="auto">— Auto (story decides) —</option>
-        <option value="male">Male character</option>
-        <option value="female">Female character</option>
-      </select>
+  <!-- Step 2: Story picker -->
+  <div class="setup-step" id="step-stories">
+    <div class="stories-header">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Choose a Story</h2>
     </div>
-
-    <div>
-      <label>Ollama Model</label>
-      <select id="model-select">
-        <option value="">Loading models…</option>
-      </select>
-    </div>
-
-    <div>
-      <label>Language</label>
-      <select id="lang-select">
-        <option value="en" selected>English</option>
-        <option value="ja">日本語 (Japanese)</option>
-      </select>
-    </div>
-
-    <button class="btn-primary" id="btn-start">Begin Story</button>
+    <div id="story-list"></div>
     <div id="setup-status"></div>
   </div>
+
+  <select id="model-select" hidden></select>
 </div>
 
 <!-- ═══════════════════════════════════════════════════ CHAT -->
@@ -439,7 +531,7 @@
   <div id="suggestions"></div>
 
   <div id="input-area">
-    <textarea id="user-input" rows="1" placeholder="Say something…"></textarea>
+    <textarea id="user-input" rows="1" placeholder="Say or do something…"></textarea>
     <button id="btn-send" title="Send (Enter)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -452,36 +544,70 @@
 const $ = id => document.getElementById(id);
 
 const URL_LANG = new URLSearchParams(location.search).get('lang') === 'ja' ? 'ja' : 'en';
-(function initLangLock() {
-  const sel = document.getElementById('lang-select');
-  if (!sel) return;
-  sel.value = URL_LANG;
-  const wrap = sel.closest('div');
-  if (wrap) wrap.style.display = 'none';
-})();
 
 let charName = 'Her';
 let streaming = false;
 let muted = false;
 let currentAudio = null;
 let suggestController = null;
+let selectedGender = 'auto';
+let storiesCache = [];
+
+// ── Step navigation ───────────────────────────────────
+function showStep(id) {
+  document.querySelectorAll('.setup-step').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+// ── Gender picker ─────────────────────────────────────
+document.querySelectorAll('.gender-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedGender = btn.dataset.gender;
+    renderStoryList();
+    showStep('step-stories');
+  });
+});
+
+$('btn-back').addEventListener('click', () => showStep('step-gender'));
 
 // ── Load stories ─────────────────────────────────────
 async function loadStories() {
   try {
     const res = await fetch(`/stories?lang=${URL_LANG}&analyzed=1`);
     const data = await res.json();
-    const sel = $('story-select');
-    sel.innerHTML = '<option value="random">— Random —</option>';
-    data.stories.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
-      sel.appendChild(opt);
-    });
+    storiesCache = data.stories || [];
   } catch {
-    // leave the default "Random" option
+    storiesCache = [];
   }
+}
+
+function renderStoryList() {
+  const list = $('story-list');
+  list.innerHTML = '';
+
+  // Random card first
+  const randomCard = document.createElement('button');
+  randomCard.className = 'story-card';
+  randomCard.innerHTML = `
+    <div class="story-title">✦ Random</div>
+    <div class="story-summary">Let fate choose — any story, any setting.</div>`;
+  randomCard.addEventListener('click', () => startStory('random'));
+  list.appendChild(randomCard);
+
+  storiesCache.forEach(({ name, summary }) => {
+    const title = name.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
+    const card = document.createElement('button');
+    card.className = 'story-card';
+    card.innerHTML = `
+      <div class="story-title">${escapeHtml(title)}</div>
+      ${summary ? `<div class="story-summary">${escapeHtml(summary)}</div>` : ''}`;
+    card.addEventListener('click', () => startStory(name));
+    list.appendChild(card);
+  });
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Load models ──────────────────────────────────────
@@ -497,14 +623,12 @@ async function loadModels() {
       opt.textContent = m;
       sel.appendChild(opt);
     });
-    // Apply the language-appropriate default after options are loaded
     applyLangDefault();
   } catch {
     $('model-select').innerHTML = '<option value="hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M">nemo latest</option>';
   }
 }
 
-// Pick the first model whose name contains any of the preferred substrings.
 function pickModel(preferred) {
   const sel = $('model-select');
   const opts = Array.from(sel.options);
@@ -516,38 +640,32 @@ function pickModel(preferred) {
 }
 
 function applyLangDefault() {
-  const lang = $('lang-select').value;
-  if (lang === 'ja') pickModel(['qwen']);
-  else               pickModel(['nemo', 'mistral']);
+  if (URL_LANG === 'ja') pickModel(['qwen']);
+  else                   pickModel(['nemo', 'mistral']);
 }
 
-// Re-default the model whenever the language changes.
-document.addEventListener('DOMContentLoaded', () => {
-  const langSel = $('lang-select');
-  if (langSel) langSel.addEventListener('change', applyLangDefault);
-});
-
 // ── Start ────────────────────────────────────────────
-$('btn-start').addEventListener('click', startStory);
-
-async function startStory() {
+async function startStory(story) {
   const model = $('model-select').value;
-  const story = $('story-select').value;
-  const playerGender = $('gender-select').value;
-  const lang = $('lang-select').value;
+  const lang = URL_LANG;
 
-  $('btn-start').disabled = true;
-  setStatus('Analyzing story and building character…');
+  // Disable all story cards while loading
+  $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = true);
+  setStatus('Preparing your story…');
 
   try {
     const res = await fetch('/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, story, player_gender: playerGender, lang }),
+      body: JSON.stringify({ model, story, player_gender: selectedGender, lang }),
     });
 
     const data = await res.json();
-    if (data.error) { setStatus('Error: ' + data.error); $('btn-start').disabled = false; return; }
+    if (data.error) {
+      setStatus('Error: ' + data.error);
+      $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = false);
+      return;
+    }
 
     charName = data.name || 'Her';
     $('char-name').textContent = charName;
@@ -560,15 +678,15 @@ async function startStory() {
     }
 
     $('messages').innerHTML = '';
+    setStatus('');
     $('setup-screen').style.display = 'none';
     $('chat-screen').style.display = 'flex';
 
-    // Get opening message
     await streamResponse('/open', null);
 
   } catch (err) {
     setStatus('Error: ' + err.message);
-    $('btn-start').disabled = false;
+    $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = false);
   }
 }
 
@@ -577,8 +695,8 @@ $('btn-new-story').addEventListener('click', () => {
   $('chat-screen').style.display = 'none';
   $('setup-screen').style.display = 'flex';
   $('summary-panel').style.display = 'none';
-  $('btn-start').disabled = false;
   setStatus('');
+  showStep('step-gender');
 });
 
 // ── Send message ─────────────────────────────────────

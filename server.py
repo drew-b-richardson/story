@@ -7,16 +7,38 @@ Then open http://localhost:5000
 
 import io
 import json
+import os
 import random
 import re
+import secrets
 import struct
 import subprocess
 import sys
 import threading
 import urllib.request
 import urllib.error
+from functools import wraps
 from pathlib import Path
 from flask import Flask, request, Response, send_file, stream_with_context
+
+# ── Simple mode (set SIMPLE_MODE=1 to disable TTS, Japanese, and indexing) ──
+SIMPLE_MODE = os.environ.get("SIMPLE_MODE", "").strip() in ("1", "true", "yes")
+_AUTH_PASSWORD = os.environ.get("STORY_PASSWORD", "")
+
+
+def _require_auth(f):
+    """HTTP Basic Auth guard — only active when SIMPLE_MODE is on and a password is set."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if SIMPLE_MODE and _AUTH_PASSWORD:
+            auth = request.authorization
+            if not auth or not secrets.compare_digest(auth.password, _AUTH_PASSWORD):
+                return Response(
+                    "Unauthorized", 401,
+                    {"WWW-Authenticate": 'Basic realm="Story"'},
+                )
+        return f(*args, **kwargs)
+    return decorated
 
 from story import analyze_story, enrich_character_profile, build_system_prompt, list_models, OLLAMA_URL
 
@@ -840,12 +862,15 @@ session = {
 
 
 @app.route("/")
+@_require_auth
 def index():
     return send_file("index.html")
 
 
 @app.route("/index_stories")
 def index_stories():
+    if SIMPLE_MODE:
+        return ("", 404)
     return send_file("index_stories.html")
 
 
@@ -854,23 +879,73 @@ def models():
     return {"models": list_models()}
 
 
+def _extract_story_summary(story_md_path: Path) -> str:
+    """Extract the ## Summary section from a _story.md, substituting real names for role labels."""
+    try:
+        text = story_md_path.read_text(encoding="utf-8")
+        in_section = False
+        lines = []
+        for line in text.splitlines():
+            if line.strip() == "## Summary":
+                in_section = True
+                continue
+            if in_section:
+                if line.startswith("## "):
+                    break
+                lines.append(line)
+        summary = "\n".join(lines).strip()
+
+        # Replace PRIMARY_MALE / PRIMARY_FEMALE with actual character names from profile.json
+        profile_path = story_md_path.parent / story_md_path.name.replace("_story.md", "_profile.json")
+        if profile_path.exists():
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            player_name   = profile.get("player_name", "")
+            player_gender = profile.get("player_gender", "male").lower()
+            other_name    = profile.get("other_name", "")
+            other_gender  = profile.get("other_gender", "female").lower()
+            player_role = "PRIMARY_MALE" if player_gender == "male" else "PRIMARY_FEMALE"
+            other_role  = "PRIMARY_MALE" if other_gender  == "male" else "PRIMARY_FEMALE"
+            # Replace longer/more specific matches first to avoid partial overlaps
+            pairs = sorted(
+                [(player_role, player_name), (other_role, other_name)],
+                key=lambda p: -len(p[0])
+            )
+            for role, name in pairs:
+                if name:
+                    summary = summary.replace(role, name)
+
+        return summary
+    except Exception:
+        return ""
+
+
 @app.route("/stories")
+@_require_auth
 def stories():
-    lang = (request.args.get("lang") or "en").lower()
+    lang = ("en" if SIMPLE_MODE else (request.args.get("lang") or "en")).lower()
     analyzed_only = request.args.get("analyzed") == "1"
     src_dir = _stories_dir(lang)
     all_txt = sorted(p.name for p in src_dir.glob("*.txt")) if src_dir.exists() else []
+    summaries_dir = _summaries_dir(lang)
     if analyzed_only:
-        summaries = _summaries_dir(lang)
-        if summaries.exists():
+        if summaries_dir.exists():
             available = {p.name.replace("_character.md", "")
-                         for p in summaries.glob("*_character.md")}
+                         for p in summaries_dir.glob("*_character.md")}
             all_txt = [s for s in all_txt if s.replace(".txt", "") in available]
-    return {"stories": all_txt}
+    result = []
+    for name in all_txt:
+        story_name = name.replace(".txt", "")
+        summary = ""
+        if summaries_dir.exists():
+            summary = _extract_story_summary(summaries_dir / f"{story_name}_story.md")
+        result.append({"name": name, "summary": summary})
+    return {"stories": result}
 
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    if SIMPLE_MODE:
+        return ("", 404)
     """Analyze a story and save character + story summaries as .md files."""
     data = request.json or {}
     story_name = data.get("story", "").strip()
@@ -947,6 +1022,8 @@ def check_analysis(story_name):
 
 @app.route("/check-translation/<story_name>")
 def check_translation(story_name):
+    if SIMPLE_MODE:
+        return ("", 404)
     """Check if an English story has already been translated to JA."""
     try:
         story_name = story_name.strip().replace(".txt", "")
@@ -958,6 +1035,8 @@ def check_translation(story_name):
 
 @app.route("/translate", methods=["POST"])
 def translate():
+    if SIMPLE_MODE:
+        return ("", 404)
     """Stream translate_story.py output as SSE for a given EN story."""
     data = request.json or {}
     story_name = (data.get("story") or "").strip().replace(".txt", "")
@@ -1003,11 +1082,12 @@ def translate():
 
 
 @app.route("/start", methods=["POST"])
+@_require_auth
 def start():
     data = request.json
     model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
-    story_lang = (data.get("lang") or "en").lower()
+    story_lang = "en" if SIMPLE_MODE else (data.get("lang") or "en").lower()
     if story_lang not in ("en", "ja"):
         story_lang = "en"
 
@@ -1204,6 +1284,7 @@ def _ollama_stream(messages):
 
 
 @app.route("/open", methods=["POST"])
+@_require_auth
 def open_story():
     trigger_msg = {"role": "user", "content": (
         "[Begin the story. 3–4 paragraphs maximum. "
@@ -1220,6 +1301,7 @@ def open_story():
 
 
 @app.route("/suggest", methods=["POST"])
+@_require_auth
 def suggest():
     """Return 2-3 short action options the player could take, based on current context."""
     if not session["messages"]:
@@ -1262,7 +1344,7 @@ def suggest():
         "model": session["model"],
         "messages": messages,
         "stream": False,
-        "options": {"num_ctx": 8192},
+        "options": {"num_ctx": 8192, "num_predict": 300},
     }).encode()
 
     req = urllib.request.Request(
@@ -1278,19 +1360,21 @@ def suggest():
         # Strip markdown fences if present
         content = re.sub(r"^```(?:json)?\s*", "", content)
         content = re.sub(r"\s*```$", "", content.strip())
-        parsed = json.loads(content)
-        if isinstance(parsed, list):
-            suggestions = [str(s) for s in parsed[:3]]
-        elif isinstance(parsed, dict):
-            # JSON mode may wrap the array: {"suggestions": [...]} or {"actions": [...]}
-            for val in parsed.values():
-                if isinstance(val, list):
-                    suggestions = [str(s) for s in val[:3]]
-                    break
-            else:
-                suggestions = []
-        else:
-            suggestions = []
+
+        suggestions = []
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, list):
+                suggestions = [str(s) for s in parsed[:3]]
+            elif isinstance(parsed, dict):
+                for val in parsed.values():
+                    if isinstance(val, list):
+                        suggestions = [str(s) for s in val[:3]]
+                        break
+        except json.JSONDecodeError:
+            # Malformed JSON — extract quoted strings directly as a fallback
+            suggestions = re.findall(r'"((?:[^"\\]|\\.)+)"', content)[:3]
+
     except Exception as e:
         print(f"Suggest error: {e!r}")
         suggestions = []
@@ -1299,6 +1383,7 @@ def suggest():
 
 
 @app.route("/chat", methods=["POST"])
+@_require_auth
 def chat():
     data = request.json
     user_input = data.get("message", "").strip()
@@ -1339,6 +1424,8 @@ def chat():
 
 @app.route("/tts", methods=["POST"])
 def tts():
+    if SIMPLE_MODE:
+        return ("", 404)
     data = request.json or {}
     text = data.get("text", "").strip()
     if not text:
@@ -1409,12 +1496,16 @@ def tts():
 
 @app.route("/kokoro_test")
 def kokoro_test():
+    if SIMPLE_MODE:
+        return ("", 404)
     return send_file("kokoro_test.html")
 
 
 @app.route("/tts_preview", methods=["POST"])
 def tts_preview():
     """Render a short sample monologue in a specific Kokoro voice."""
+    if SIMPLE_MODE:
+        return ("", 404)
     data = request.json or {}
     voice = data.get("voice", "").strip()
     lang  = data.get("lang", "en-us").strip()
@@ -1442,8 +1533,10 @@ def tts_preview():
 
 
 if __name__ == "__main__":
-    print("Story Roleplay Server")
-    print("Open http://localhost:5000 in your browser")
-    # Pre-warm kokoro in background so first TTS call is fast
-    threading.Thread(target=get_kokoro, daemon=True).start()
-    app.run(debug=False, port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    print("Story Roleplay Server" + (" [SIMPLE MODE]" if SIMPLE_MODE else ""))
+    print(f"Open http://localhost:{port} in your browser")
+    if not SIMPLE_MODE:
+        # Pre-warm kokoro in background so first TTS call is fast
+        threading.Thread(target=get_kokoro, daemon=True).start()
+    app.run(debug=False, port=port, threaded=True)

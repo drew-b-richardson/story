@@ -150,3 +150,64 @@ rm ~/Library/Logs/otherdoor-tunnel.log
 **Tunnel connected but site unreachable:**
 - DNS may still be propagating (can take up to a few hours after first setup)
 - Test from a phone on cellular data to bypass local DNS cache
+
+**Tunnel drops when I step away from the Mac:**
+
+Symptom in `~/Library/Logs/otherdoor-tunnel.log`:
+```
+WRN Serve tunnel error error="control stream encountered a failure while serving"
+WRN Connection terminated error="control stream encountered a failure while serving"
+```
+
+This is macOS sleeping the machine (or suspending its network) — `cloudflared` loses its control stream and retries forever while the host is asleep. Also: LaunchAgents only run while you're logged in at the GUI, so logging out stops them entirely.
+
+### Fix 1 — keep the Mac awake (required)
+
+```bash
+sudo pmset -a sleep 0          # never sleep
+sudo pmset -a disksleep 0      # don't spin down disk
+sudo pmset -a womp 1           # wake on network
+sudo pmset -a powernap 1
+sudo pmset -a tcpkeepalive 1
+```
+
+Also in **System Settings → Energy**: enable "Prevent automatic sleeping when the display is off" and "Start up automatically after a power failure."
+
+### Fix 2 — run as LaunchDaemons so services survive logout (optional)
+
+Only needed if you want the host to work while fully logged out. Move the plists from per-user LaunchAgents to system-wide LaunchDaemons:
+
+```bash
+# Unload the user-level agents first
+launchctl unload ~/Library/LaunchAgents/xyz.otherdoor.server.plist
+launchctl unload ~/Library/LaunchAgents/xyz.otherdoor.tunnel.plist
+
+# Move to system location and fix ownership
+sudo mv ~/Library/LaunchAgents/xyz.otherdoor.{server,tunnel}.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/xyz.otherdoor.*.plist
+sudo chmod 644 /Library/LaunchDaemons/xyz.otherdoor.*.plist
+```
+
+Before loading, edit each plist and:
+
+1. Add a `UserName` key so the daemon runs as you (not root), otherwise Ollama, the venv, and `~` paths break:
+   ```xml
+   <key>UserName</key>
+   <string>drew</string>
+   ```
+2. Replace any `~/...` paths in `StandardOutPath`, `StandardErrorPath`, `WorkingDirectory`, and `ProgramArguments` with absolute `/Users/drew/...` paths — LaunchDaemons don't expand `~`.
+
+Then load:
+
+```bash
+sudo launchctl load /Library/LaunchDaemons/xyz.otherdoor.server.plist
+sudo launchctl load /Library/LaunchDaemons/xyz.otherdoor.tunnel.plist
+```
+
+All `launchctl` commands in this doc now need `sudo` and the `system/` target instead of `gui/$(id -u)/`:
+
+```bash
+sudo launchctl kickstart -k system/xyz.otherdoor.server
+sudo launchctl kickstart -k system/xyz.otherdoor.tunnel
+sudo launchctl list | grep otherdoor
+```

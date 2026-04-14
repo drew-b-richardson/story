@@ -460,17 +460,6 @@
 
   #btn-send svg { width: 18px; height: 18px; }
 
-  /* Summary panel */
-  #summary-panel {
-    background: var(--surface2);
-    border-bottom: 1px solid var(--border);
-    padding: 0.7rem 1.2rem;
-    font-size: 0.82rem;
-    color: var(--muted);
-    font-style: italic;
-    line-height: 1.5;
-    display: none;
-  }
 </style>
 </head>
 <body>
@@ -523,8 +512,6 @@
     <button id="btn-mute" title="Toggle voice">♪</button>
     <button id="btn-new-story">New Story</button>
   </div>
-
-  <div id="summary-panel"></div>
 
   <div id="messages"></div>
 
@@ -674,11 +661,6 @@ async function startStory(story) {
     $('char-meta').textContent = [data.setting, data.stage].filter(Boolean).join(' · ');
     $('char-avatar').textContent = playerName[0] || '♥';
 
-    if (data.summary) {
-      $('summary-panel').textContent = data.summary;
-      $('summary-panel').style.display = 'block';
-    }
-
     $('messages').innerHTML = '';
     setStatus('');
     $('setup-screen').style.display = 'none';
@@ -698,10 +680,8 @@ $('btn-new-story').addEventListener('click', () => {
   clearSuggestions();
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   $('messages').innerHTML = '';
-  $('summary-panel').textContent = '';
   $('chat-screen').style.display = 'none';
   $('setup-screen').style.display = 'flex';
-  $('summary-panel').style.display = 'none';
   setStatus('');
   showStep('step-gender');
 });

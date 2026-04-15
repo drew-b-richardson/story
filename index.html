@@ -243,6 +243,46 @@
     max-width: 600px;
   }
 
+  /* ── Save cards ── */
+  #saves-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .save-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    text-align: left;
+    width: 100%;
+  }
+
+  .save-card:hover {
+    border-color: var(--accent);
+    background: var(--surface2);
+  }
+
+  .save-title {
+    font-size: 0.95rem;
+    color: var(--accent2);
+    margin-bottom: 0.3rem;
+    text-transform: capitalize;
+  }
+
+  .save-meta {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-style: italic;
+    line-height: 1.4;
+  }
+
   /* ── Chat screen ── */
   #chat-screen {
     display: none;
@@ -297,6 +337,229 @@
   }
   #btn-mute:hover { border-color: var(--accent); color: var(--accent2); }
   #btn-mute.muted { color: var(--border); border-color: var(--border); }
+
+  #btn-journal {
+    position: relative;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 0.4rem 0.7rem;
+    border-radius: 8px;
+    line-height: 1;
+  }
+  #btn-journal:hover { border-color: var(--accent); color: var(--accent2); }
+  #btn-journal.has-new { color: var(--accent2); border-color: var(--accent); }
+  .journal-badge {
+    position: absolute;
+    top: -6px; right: -6px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.65rem;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    line-height: 16px;
+    text-align: center;
+    font-weight: 600;
+  }
+
+  .journal-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 1rem;
+  }
+  .journal-dialog {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 640px;
+    width: 100%;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .journal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.2rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .journal-header h3 { margin: 0; font-size: 1rem; color: var(--accent2); font-weight: 500; letter-spacing: 0.05em; }
+  .journal-close {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.3rem;
+  }
+  .journal-close:hover { color: var(--accent2); }
+  .journal-list { overflow-y: auto; padding: 0.6rem; }
+  .journal-entry {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    margin-bottom: 0.6rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .journal-entry:hover { border-color: var(--accent); }
+  .journal-entry.locked {
+    cursor: default;
+    opacity: 0.4;
+    font-style: italic;
+  }
+  .journal-entry.locked:hover { border-color: var(--border); }
+  .journal-entry .je-title {
+    font-size: 0.95rem;
+    color: var(--accent2);
+    margin-bottom: 0.3rem;
+  }
+  .journal-entry .je-kind {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.4rem;
+  }
+  .journal-entry .je-body {
+    display: none;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+    margin-top: 0.6rem;
+  }
+  .journal-entry.open .je-body { display: block; }
+  .je-play {
+    margin-top: 0.6rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .je-play:hover { border-color: var(--accent); color: var(--accent2); }
+
+  .journal-toast {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    color: var(--accent2);
+    padding: 0.8rem 1.2rem;
+    border-radius: 8px;
+    z-index: 200;
+    font-size: 0.9rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    animation: toast-in 0.3s ease-out;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translate(-50%, 20px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  /* ── Affinity dot (live indicator) ── */
+  #affinity-dot {
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: default;
+    user-select: none;
+    transition: color 0.6s ease, text-shadow 0.6s ease;
+    color: hsl(0, 60%, 55%);
+    text-shadow: none;
+    animation: affinity-pulse 2s ease-in-out infinite;
+    animation-play-state: paused;
+  }
+  @keyframes affinity-pulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.18); }
+  }
+
+  /* ── Prior affinity banner (setup screen) ── */
+  #prior-banner {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    margin: 0 auto 0.9rem;
+    max-width: 600px;
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-style: italic;
+    display: none;
+  }
+  #prior-banner strong { color: var(--accent2); font-style: normal; }
+
+  /* ── Recap modal ── */
+  #recap-modal {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+    padding: 1rem;
+  }
+  #recap-modal.active { display: flex; }
+  #recap-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
+    max-width: 520px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  #recap-card h2 { margin: 0 0 1rem; font-size: 1.15rem; color: var(--accent2); }
+  .recap-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 0.55rem 0;
+    font-size: 0.9rem;
+  }
+  .recap-label { width: 5.5rem; color: var(--muted); }
+  .recap-value { width: 3rem; font-variant-numeric: tabular-nums; color: var(--accent2); }
+  .recap-spark { flex: 1; height: 22px; }
+  .recap-spark polyline { fill: none; stroke-width: 1.5; }
+  #recap-narrative {
+    margin: 1rem 0 1.2rem;
+    padding: 0.7rem 0.9rem;
+    background: rgba(255,255,255,0.03);
+    border-left: 2px solid var(--accent);
+    font-style: italic;
+    font-size: 0.9rem;
+    color: var(--muted);
+    min-height: 1.4em;
+  }
+  #recap-actions { display: flex; gap: 0.6rem; justify-content: flex-end; }
+  #recap-actions button {
+    padding: 0.5rem 0.95rem;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  #recap-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #recap-actions button:hover { border-color: var(--accent); color: var(--accent2); }
+  #recap-actions button.primary:hover { color: #fff; }
 
   #tts-indicator {
     width: 8px; height: 8px;
@@ -467,6 +730,14 @@
 <!-- ═══════════════════════════════════════════════════ SETUP -->
 <div id="setup-screen">
 
+  <!-- Step 0: Saved sessions (shown if saves exist) -->
+  <div class="setup-step" id="step-saves">
+    <h1>Continue a Story</h1>
+    <p class="subtitle">Pick up where you left off</p>
+    <div id="saves-list"></div>
+    <button class="btn-back" id="btn-new-from-saves" style="align-self: center; margin-top: 1.5rem;">↓ New Story</button>
+  </div>
+
   <!-- Step 1: Gender picker -->
   <div class="setup-step active" id="step-gender">
     <h1>Story Roleplay</h1>
@@ -509,9 +780,30 @@
       <div id="char-meta">—</div>
     </div>
     <div id="tts-indicator" title="Speaking…"></div>
+    <span id="affinity-dot" title="" aria-label="Affinity">♥</span>
+    <button id="btn-save" title="Save progress" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">💾</button>
+    <button id="btn-view-recap" title="View relationship recap" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">📊</button>
     <button id="btn-mute" title="Toggle voice">♪</button>
+    <button id="btn-journal" title="Journal">
+      <span class="journal-icon">✦</span>
+      <span id="journal-badge" class="journal-badge" style="display:none;">0</span>
+    </button>
     <button id="btn-new-story">New Story</button>
   </div>
+
+  <div id="journal-modal" class="journal-modal" style="display:none;">
+    <div class="journal-dialog">
+      <div class="journal-header">
+        <h3 id="journal-title-text">Journal</h3>
+        <button id="btn-journal-close" class="journal-close" title="Close">×</button>
+      </div>
+      <div id="journal-list" class="journal-list"></div>
+    </div>
+  </div>
+
+  <div id="journal-toast" class="journal-toast" style="display:none;"></div>
+
+  <div id="prior-banner"></div>
 
   <div id="messages"></div>
 
@@ -527,10 +819,69 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════ RECAP MODAL -->
+<div id="recap-modal" role="dialog" aria-modal="true">
+  <div id="recap-card">
+    <h2 id="recap-title">How it went</h2>
+    <div class="recap-row">
+      <span class="recap-label" id="recap-label-trust">Trust</span>
+      <span class="recap-value" id="recap-val-trust">—</span>
+      <svg class="recap-spark" id="recap-spark-trust" viewBox="0 0 100 22" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="recap-row">
+      <span class="recap-label" id="recap-label-intimacy">Intimacy</span>
+      <span class="recap-value" id="recap-val-intimacy">—</span>
+      <svg class="recap-spark" id="recap-spark-intimacy" viewBox="0 0 100 22" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="recap-row">
+      <span class="recap-label" id="recap-label-tension">Tension</span>
+      <span class="recap-value" id="recap-val-tension">—</span>
+      <svg class="recap-spark" id="recap-spark-tension" viewBox="0 0 100 22" preserveAspectRatio="none"></svg>
+    </div>
+    <div id="recap-narrative"></div>
+    <div id="recap-actions">
+      <button id="recap-close" type="button">Close</button>
+      <button id="recap-new" class="primary" type="button">Start New Story</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 
 const URL_LANG = new URLSearchParams(location.search).get('lang') === 'ja' ? 'ja' : 'en';
+
+// ── Affinity i18n ─────────────────────────────────────
+const AFFINITY_I18N = {
+  en: {
+    trust: 'Trust', intimacy: 'Intimacy', tension: 'Tension',
+    title: 'How it went',
+    priorPrefix: 'Last time you left them at',
+    close: 'Close', newStory: 'Start New Story',
+    aria: 'Affinity',
+  },
+  ja: {
+    trust: '信頼', intimacy: '親密さ', tension: '緊張',
+    title: '今回の結末',
+    priorPrefix: '前回、あなたが残したのは',
+    close: '閉じる', newStory: '新しい物語を始める',
+    aria: '親密度',
+  },
+};
+const _aff_t = AFFINITY_I18N[URL_LANG];
+// Apply static labels
+document.addEventListener('DOMContentLoaded', () => {
+  $('recap-title').textContent = _aff_t.title;
+  $('recap-label-trust').textContent = _aff_t.trust;
+  $('recap-label-intimacy').textContent = _aff_t.intimacy;
+  $('recap-label-tension').textContent = _aff_t.tension;
+  $('recap-close').textContent = _aff_t.close;
+  $('recap-new').textContent = _aff_t.newStory;
+  $('affinity-dot').setAttribute('aria-label', _aff_t.aria);
+});
+
+let currentAffinity = null;
+let currentAffinityHistory = [];
 
 let charName = 'Her';
 let streaming = false;
@@ -558,7 +909,8 @@ document.querySelectorAll('.gender-btn').forEach(btn => {
 
 $('btn-back').addEventListener('click', () => showStep('step-gender'));
 
-// ── Load stories ─────────────────────────────────────
+// ── Load stories & saves ─────────────────────────────
+let savedSessions = [];
 async function loadStories() {
   try {
     const res = await fetch(`/stories?lang=${URL_LANG}&analyzed=1`);
@@ -567,6 +919,71 @@ async function loadStories() {
   } catch {
     storiesCache = [];
   }
+  try {
+    const res = await fetch('/saves');
+    const data = await res.json();
+    savedSessions = data.saves || [];
+  } catch {
+    savedSessions = [];
+  }
+  // If saves exist, show step-saves; otherwise show step-gender
+  if (savedSessions.length > 0) {
+    renderSavesList();
+    showStep('step-saves');
+  } else {
+    showStep('step-gender');
+  }
+}
+
+function renderSavesList() {
+  const list = $('saves-list');
+  list.innerHTML = '';
+  savedSessions.forEach(save => {
+    const container = document.createElement('div');
+    container.style.display = 'flex';
+    container.style.gap = '0.5rem';
+    container.style.alignItems = 'stretch';
+
+    const card = document.createElement('button');
+    card.className = 'save-card';
+    card.style.flex = '1';
+    const storyTitle = save.story.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
+    const timestamp = new Date(save.saved_at).toLocaleDateString() + ' ' +
+                      new Date(save.saved_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    card.innerHTML = `
+      <div class="save-title">${escapeHtml(storyTitle)}</div>
+      <div class="save-meta">Playing as <strong>${escapeHtml(save.player_name)}</strong> with <strong>${escapeHtml(save.other_name)}</strong></div>
+      <div class="save-meta">${escapeHtml(timestamp)}</div>`;
+    card.addEventListener('click', () => resumeSession(save.id));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'save-delete-btn';
+    deleteBtn.textContent = '✕';
+    deleteBtn.title = 'Delete save';
+    deleteBtn.style.background = 'transparent';
+    deleteBtn.style.border = '1px solid var(--border)';
+    deleteBtn.style.borderRadius = 'var(--radius)';
+    deleteBtn.style.color = 'var(--muted)';
+    deleteBtn.style.width = '2.5rem';
+    deleteBtn.style.cursor = 'pointer';
+    deleteBtn.style.fontSize = '0.9rem';
+    deleteBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete save "${storyTitle}"?`)) {
+        try {
+          const res = await fetch(`/saves/${save.id}`, { method: 'DELETE' });
+          if (res.ok) {
+            savedSessions = savedSessions.filter(s => s.id !== save.id);
+            renderSavesList();
+          }
+        } catch {}
+      }
+    });
+
+    container.appendChild(card);
+    container.appendChild(deleteBtn);
+    list.appendChild(container);
+  });
 }
 
 function renderStoryList() {
@@ -661,6 +1078,10 @@ async function startStory(story) {
     $('char-meta').textContent = [data.setting, data.stage].filter(Boolean).join(' · ');
     $('char-avatar').textContent = playerName[0] || '♥';
 
+    currentAffinity = data.affinity || null;
+    currentAffinityHistory = [];
+    updateAffinityDot(currentAffinity);
+
     $('messages').innerHTML = '';
     setStatus('');
     $('setup-screen').style.display = 'none';
@@ -674,16 +1095,108 @@ async function startStory(story) {
   }
 }
 
+async function resumeSession(saveId) {
+  setStatus('Resuming your story…');
+  try {
+    const res = await fetch('/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ save_id: saveId }),
+    });
+
+    const data = await res.json();
+    if (data.error) {
+      setStatus('Error: ' + data.error);
+      return;
+    }
+
+    charName = data.name || 'Her';
+    const playerName = data.player_name || 'You';
+    $('char-name').textContent = playerName;
+    $('char-meta').textContent = [data.setting, data.stage].filter(Boolean).join(' · ');
+    $('char-avatar').textContent = playerName[0] || '♥';
+
+    currentAffinity = data.affinity || null;
+    currentAffinityHistory = [];
+    updateAffinityDot(currentAffinity);
+
+    // Render recent messages
+    $('messages').innerHTML = '';
+    if (data.recent_messages && Array.isArray(data.recent_messages)) {
+      data.recent_messages.forEach(m => {
+        if (m.role === 'user') appendMessage('user', m.content);
+        else if (m.role === 'assistant') appendMessage('her', m.content);
+      });
+    }
+
+    setStatus('');
+    $('setup-screen').style.display = 'none';
+    $('chat-screen').style.display = 'flex';
+    scrollToBottom();
+
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+  }
+}
+
 // ── New story ────────────────────────────────────────
-$('btn-new-story').addEventListener('click', () => {
+function resetToSetup() {
   if (streamController) { streamController.abort(); streamController = null; }
   clearSuggestions();
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   $('messages').innerHTML = '';
+  $('prior-banner').style.display = 'none';
+  currentAffinity = null;
+  currentAffinityHistory = [];
   $('chat-screen').style.display = 'none';
   $('setup-screen').style.display = 'flex';
   setStatus('');
   showStep('step-gender');
+}
+
+$('btn-new-story').addEventListener('click', async () => {
+  // If the user has had any turns, offer a recap first.
+  const hasPlayed = currentAffinity && (currentAffinityHistory.length > 0 || currentAffinity.turn > 0);
+  if (hasPlayed) {
+    await showRecapModal();
+    return;
+  }
+  resetToSetup();
+});
+
+$('btn-new-from-saves').addEventListener('click', () => showStep('step-gender'));
+
+$('btn-save').addEventListener('click', async () => {
+  $('btn-save').disabled = true;
+  const orig = $('btn-save').textContent;
+  $('btn-save').textContent = '…';
+  try {
+    const res = await fetch('/save', { method: 'POST' });
+    const data = await res.json();
+    if (data.save_id) {
+      $('btn-save').textContent = '✓';
+      setTimeout(() => { $('btn-save').textContent = orig; $('btn-save').disabled = false; }, 2000);
+    } else {
+      $('btn-save').textContent = orig;
+      $('btn-save').disabled = false;
+    }
+  } catch {
+    $('btn-save').textContent = orig;
+    $('btn-save').disabled = false;
+  }
+});
+
+$('recap-close').addEventListener('click', () => {
+  $('recap-modal').classList.remove('active');
+});
+$('recap-new').addEventListener('click', () => {
+  $('recap-modal').classList.remove('active');
+  resetToSetup();
+});
+$('btn-view-recap').addEventListener('click', async () => {
+  if (currentAffinity && currentAffinity.turn > 0) {
+    await showRecapModal();
+  }
 });
 
 // ── Send message ─────────────────────────────────────
@@ -797,6 +1310,11 @@ async function streamResponse(url, body) {
         try {
           const data = JSON.parse(line.slice(6));
           if (data.error) { console.error(data.error); break; }
+          if (data.journal_unlock) { handleJournalUnlock(data.journal_unlock); continue; }
+          if (data.done && data.affinity) {
+            currentAffinity = data.affinity;
+            updateAffinityDot(currentAffinity);
+          }
           if (data.token) {
             if (!msgEl) {
               typingEl.remove();
@@ -820,7 +1338,113 @@ async function streamResponse(url, body) {
     if (fullText && !controller.signal.aborted) {
       speakText(fullText);
       loadSuggestions();
+      setTimeout(refreshAffinity, 2500);
     }
+  }
+}
+
+// ── Affinity helpers ───────────────────────────────────
+async function refreshAffinity() {
+  try {
+    const res = await fetch('/affinity');
+    const data = await res.json();
+    if (data.affinity) {
+      currentAffinity = data.affinity;
+      currentAffinityHistory = data.history || [];
+      updateAffinityDot(currentAffinity);
+    }
+  } catch {}
+}
+
+function updateAffinityDot(a) {
+  const el = $('affinity-dot');
+  if (!el) return;
+  if (!a) {
+    el.style.color = '';
+    el.style.opacity = '0.4';
+    el.style.animationPlayState = 'paused';
+    el.title = '';
+    return;
+  }
+  // Hue: trust 0 = red (0°), 5 = pink (340°), 10 = warm gold (45°).
+  // Interpolate via two segments so the dot shifts smoothly across the dial.
+  const t = Math.max(0, Math.min(10, a.trust));
+  let hue;
+  if (t <= 5) hue = 0 + (340 - 0) * (t / 5);            // 0° → 340°
+  else        hue = 340 + (45 + 360 - 340) * ((t - 5) / 5);
+  hue = ((hue % 360) + 360) % 360;
+  const sat = 55 + a.intimacy * 2;   // 55–75%
+  const light = 45 + a.intimacy * 1; // 45–55%
+  el.style.color = `hsl(${hue}, ${sat}%, ${light}%)`;
+  el.style.opacity = (0.55 + 0.045 * a.intimacy).toFixed(2);
+  // Tension → pulse speed. 0 = paused, 10 = ~0.7s.
+  if (a.tension <= 0) {
+    el.style.animationPlayState = 'paused';
+  } else {
+    const dur = (2.2 - 0.15 * a.tension).toFixed(2);
+    el.style.animationDuration = `${dur}s`;
+    el.style.animationPlayState = 'running';
+  }
+  el.title = a.last_reason || '';
+}
+
+function renderPriorBanner(prior) {
+  const el = $('prior-banner');
+  if (!prior || !prior.final) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const f = prior.final;
+  const line = `${_aff_t.priorPrefix} <strong>${_aff_t.trust} ${f.trust}/10, ${_aff_t.intimacy} ${f.intimacy}/10, ${_aff_t.tension} ${f.tension}/10</strong>`;
+  const narrative = prior.narrative ? ` — <em>${escapeHtml(prior.narrative)}</em>` : '';
+  el.innerHTML = line + narrative;
+  el.style.display = 'block';
+}
+
+function renderSparkline(svgId, values, hue) {
+  const svg = $(svgId);
+  if (!svg) return;
+  svg.innerHTML = '';
+  if (!values.length) return;
+  const W = 100, H = 22;
+  const n = values.length;
+  const step = n > 1 ? W / (n - 1) : 0;
+  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(H - (v / 10) * H).toFixed(1)}`).join(' ');
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  line.setAttribute('points', pts);
+  line.setAttribute('stroke', `hsl(${hue}, 60%, 60%)`);
+  svg.appendChild(line);
+}
+
+async function showRecapModal() {
+  // Render with cached values immediately so modal doesn't feel laggy.
+  const a = currentAffinity || { trust: 0, intimacy: 0, tension: 0 };
+  $('recap-val-trust').textContent = `${a.trust}/10`;
+  $('recap-val-intimacy').textContent = `${a.intimacy}/10`;
+  $('recap-val-tension').textContent = `${a.tension}/10`;
+  $('recap-narrative').textContent = '…';
+  renderSparkline('recap-spark-trust', currentAffinityHistory.map(e => e.trust), 340);
+  renderSparkline('recap-spark-intimacy', currentAffinityHistory.map(e => e.intimacy), 20);
+  renderSparkline('recap-spark-tension', currentAffinityHistory.map(e => e.tension), 200);
+  $('recap-modal').classList.add('active');
+
+  try {
+    const res = await fetch('/recap', { method: 'POST' });
+    const data = await res.json();
+    if (data.final) {
+      $('recap-val-trust').textContent = `${data.final.trust}/10`;
+      $('recap-val-intimacy').textContent = `${data.final.intimacy}/10`;
+      $('recap-val-tension').textContent = `${data.final.tension}/10`;
+    }
+    if (data.history) {
+      renderSparkline('recap-spark-trust', data.history.map(e => e.trust), 340);
+      renderSparkline('recap-spark-intimacy', data.history.map(e => e.intimacy), 20);
+      renderSparkline('recap-spark-tension', data.history.map(e => e.tension), 200);
+    }
+    $('recap-narrative').textContent = data.narrative || '';
+  } catch {
+    $('recap-narrative').textContent = '';
   }
 }
 
@@ -930,6 +1554,133 @@ async function speakText(text) {
     console.warn('TTS error:', e);
   }
 }
+
+// ── Journal ───────────────────────────────────────────
+let journalNewCount = 0;
+let journalAudio = null;
+
+function handleJournalUnlock(entry) {
+  journalNewCount += 1;
+  const badge = $('journal-badge');
+  badge.textContent = journalNewCount;
+  badge.style.display = 'inline-block';
+  $('btn-journal').classList.add('has-new');
+  showJournalToast(`New ${entry.kind}: ${entry.title}`);
+}
+
+function showJournalToast(text) {
+  const toast = $('journal-toast');
+  toast.textContent = text;
+  toast.style.display = 'block';
+  clearTimeout(showJournalToast._t);
+  showJournalToast._t = setTimeout(() => { toast.style.display = 'none'; }, 3500);
+}
+
+function resetJournalBadge() {
+  journalNewCount = 0;
+  $('journal-badge').style.display = 'none';
+  $('btn-journal').classList.remove('has-new');
+}
+
+async function openJournal() {
+  try {
+    const res = await fetch('/journal');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderJournal(data.entries || []);
+    $('journal-modal').style.display = 'flex';
+    resetJournalBadge();
+  } catch (e) { console.warn('Journal load error:', e); }
+}
+
+function closeJournal() {
+  $('journal-modal').style.display = 'none';
+  if (journalAudio) { journalAudio.pause(); journalAudio = null; }
+}
+
+function renderJournal(entries) {
+  const list = $('journal-list');
+  list.innerHTML = '';
+  if (!entries.length) {
+    list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted);font-style:italic;">No journal entries yet. Keep going…</div>';
+    return;
+  }
+  entries.forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'journal-entry' + (e.unlocked ? '' : ' locked');
+    const title = document.createElement('div');
+    title.className = 'je-title';
+    title.textContent = e.unlocked ? e.title : '— locked —';
+    const kind = document.createElement('div');
+    kind.className = 'je-kind';
+    kind.textContent = e.kind || 'memory';
+    div.appendChild(kind);
+    div.appendChild(title);
+    if (e.unlocked) {
+      const body = document.createElement('div');
+      body.className = 'je-body';
+      body.textContent = e.body || '';
+      const play = document.createElement('button');
+      play.className = 'je-play';
+      play.textContent = '▶ Play in her voice';
+      play.addEventListener('click', ev => { ev.stopPropagation(); playJournalEntry(e.id, play); });
+      div.appendChild(body);
+      div.appendChild(play);
+      div.addEventListener('click', () => div.classList.toggle('open'));
+    }
+    list.appendChild(div);
+  });
+}
+
+async function playJournalEntry(id, btn) {
+  if (journalAudio) { journalAudio.pause(); journalAudio = null; }
+  const origLabel = btn.textContent;
+  btn.textContent = '… loading';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/journal/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) { btn.textContent = origLabel; btn.disabled = false; return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    journalAudio = audio;
+    btn.textContent = '■ Stop';
+    btn.disabled = false;
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      btn.textContent = origLabel;
+      if (journalAudio === audio) journalAudio = null;
+    };
+    audio.addEventListener('ended', cleanup);
+    audio.addEventListener('error', cleanup);
+    btn.onclick = ev => {
+      ev.stopPropagation();
+      audio.pause();
+      cleanup();
+      btn.onclick = null;
+      btn.addEventListener('click', ev2 => { ev2.stopPropagation(); playJournalEntry(id, btn); });
+    };
+    await audio.play();
+  } catch (e) {
+    console.warn('Journal TTS error:', e);
+    btn.textContent = origLabel;
+    btn.disabled = false;
+  }
+}
+
+$('btn-journal').addEventListener('click', openJournal);
+$('btn-journal-close').addEventListener('click', closeJournal);
+$('journal-modal').addEventListener('click', e => {
+  if (e.target.id === 'journal-modal') closeJournal();
+});
+
+// Reset journal state when starting a new story
+const _origNewStory = $('btn-new-story').onclick;
+$('btn-new-story').addEventListener('click', () => { resetJournalBadge(); });
 
 // ── Init ──────────────────────────────────────────────
 loadStories();

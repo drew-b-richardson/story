@@ -225,13 +225,9 @@
                 </select>
                 <span class="hint">applied to the next Analyze</span>
             </div>
-            <div class="lang-picker">
-                <label for="modelSelect">Model:</label>
-                <select id="modelSelect">
-                    <option value="">Loading…</option>
-                </select>
-                <span class="hint">auto-selects by language</span>
-            </div>
+            <select id="modelSelect" style="display: none;">
+                <option value="">Loading…</option>
+            </select>
             <div class="story-list" id="storyList">
                 <!-- Stories will be loaded here -->
             </div>
@@ -262,7 +258,8 @@
         async function loadStories() {
             document.getElementById('loading').style.display = 'block';
             try {
-                const res = await fetch(`/stories?lang=${URL_LANG}`);
+                // Always load English stories (the source)
+                const res = await fetch(`/stories?lang=en`);
                 const data = await res.json();
                 const stories = data.stories || [];
 
@@ -278,17 +275,21 @@
                 list.innerHTML = '';
 
                 for (const story of stories) {
-                    const storyName = story.replace('.txt', '');
+                    const storyName = story.name.replace('.txt', '');
                     const item = document.createElement('div');
                     item.className = 'story-item';
                     item.id = `story-${storyName}`;
 
-                    const hasAnalysis = await checkIfAnalyzed(storyName);
+                    // Check for analysis in the current language view
+                    const hasAnalysis = await checkIfAnalyzed(storyName, URL_LANG);
                     if (hasAnalysis) item.classList.add('analyzed');
 
+                    let analyzeLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
                     let translateBtn = '';
                     let translateLog = '';
-                    if (URL_LANG === 'en') {
+
+                    // Translate button and checks: only when lang=ja param is set
+                    if (URL_LANG === 'ja') {
                         const hasTranslation = await checkIfTranslated(storyName);
                         const tLabel = hasTranslation ? 'Re-translate' : 'Translate →日';
                         translateBtn = `<button class="btn-translate" id="tbtn-${storyName}" onclick="translateStory('${storyName}')">${tLabel}</button>`;
@@ -301,7 +302,7 @@
                             ${hasAnalysis ? '✓ Done' : 'Ready'}
                         </div>
                         <button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">
-                            Analyze
+                            ${analyzeLabel}
                         </button>
                         ${translateBtn}
                     `;
@@ -319,9 +320,9 @@
             }
         }
 
-        async function checkIfAnalyzed(storyName) {
+        async function checkIfAnalyzed(storyName, lang = 'en') {
             try {
-                const res = await fetch(`/check-analysis/${storyName}?lang=${URL_LANG}`);
+                const res = await fetch(`/check-analysis/${storyName}?lang=${lang}`);
                 const data = await res.json();
                 return data.analyzed;
             } catch {
@@ -403,9 +404,8 @@
             status.innerHTML = '<span class="loading" style="margin-right: 4px;"></span>Analyzing...';
 
             try {
-                const lang = document.getElementById('langSelect').value;
                 const model = document.getElementById('modelSelect').value;
-                const body = { story: storyName, lang };
+                const body = { story: storyName, lang: URL_LANG };
                 if (model) body.model = model;
                 const res = await fetch('/analyze', {
                     method: 'POST',

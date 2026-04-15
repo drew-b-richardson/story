@@ -40,13 +40,15 @@ def _require_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-from story import analyze_story, enrich_character_profile, build_system_prompt, list_models, OLLAMA_URL
+from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entries, list_models, OLLAMA_URL
+import affinity
 
 STORIES_DIR = Path(__file__).parent / "stories"
 STORIES_DIR_JA = Path(__file__).parent / "stories_ja"
 SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
 SUMMARIES_DIR_JA = Path(__file__).parent / "story_summaries_jp"
 LOGS_DIR = Path(__file__).parent / "logs"
+SAVES_DIR = Path(__file__).parent / "saves"
 
 
 def _summaries_dir(lang: str) -> Path:
@@ -95,12 +97,17 @@ def _compress_history() -> None:
     # Pair up user/assistant turns; keep last N pairs verbatim
     pairs = []
     i = 0
+    unpaired_user_at_end = None
     while i < len(history) - 1:
         if history[i]["role"] == "user" and history[i + 1]["role"] == "assistant":
             pairs.append((history[i], history[i + 1]))
             i += 2
         else:
             i += 1
+
+    # Check if there's an unpaired user message at the end (no assistant response yet)
+    if history and history[-1]["role"] == "user":
+        unpaired_user_at_end = history[-1]
 
     to_summarize = pairs[:-_KEEP_RECENT_EXCHANGES] if len(pairs) > _KEEP_RECENT_EXCHANGES else []
     keep_pairs   = pairs[-_KEEP_RECENT_EXCHANGES:]
@@ -165,7 +172,7 @@ def _compress_history() -> None:
         ),
     }
 
-    # Reconstruct message list: system + summary + recent verbatim pairs
+    # Reconstruct message list: system + summary + recent verbatim pairs + unpaired user (if any)
     new_messages = []
     if system_msg:
         new_messages.append(system_msg)
@@ -173,6 +180,8 @@ def _compress_history() -> None:
     for user_m, asst_m in keep_pairs:
         new_messages.append(user_m)
         new_messages.append(asst_m)
+    if unpaired_user_at_end:
+        new_messages.append(unpaired_user_at_end)
 
     before_count = len(messages)
     after_count  = len(new_messages)
@@ -222,6 +231,56 @@ JA_PRIMARY_FEMALE_VOICE          = "jf_gongitsune"
 JA_SECONDARY_MALE_VOICE          = "jm_kumo"      # Kokoro ships only one jm_ voice
 JA_SECONDARY_FEMALE_VOICE        = "jf_nezumi"
 JA_LANG                          = "ja"
+
+
+def _generate_save_summary(lang: str = "en") -> str:
+    """Generate a comprehensive multi-paragraph narrative summary of the current session
+    for save file. Unlike _compress_history, this does not mutate session state."""
+    messages = session.get("messages", [])
+    if not messages or len(messages) < 2:
+        return ""
+
+    # Build transcript from all non-system messages
+    transcript_lines = []
+    for m in messages:
+        if m["role"] == "system":
+            continue
+        role = m["role"].upper()
+        if role == "ASSISTANT":
+            role = session.get("other_name", "NPC").upper()
+        elif role == "USER":
+            role = "PLAYER"
+        transcript_lines.append(f"{role}: {m['content']}")
+
+    if not transcript_lines:
+        return ""
+
+    transcript = "\n\n".join(transcript_lines)
+    if lang == "ja":
+        sys_prompt = (
+            "このストーリーセッションの包括的な叙述的要約を書いてください。保存ファイルに使用します。"
+            "カバーする内容: キャラクター間の関係ダイナミクス、すべての重要なイベントと転換点、"
+            "感情的なビート、どのように変化したか、未解決のスレッドや緊張。平文で、3～5段落です。"
+            "このサマリーは、プレイヤーがストーリーを再開するときにコンテキストを再構築するために使用されます。"
+        )
+    else:
+        sys_prompt = (
+            "Write a comprehensive narrative recap of this story session for use as a save file. "
+            "Cover: the relationship dynamic between the characters, all significant events and turning points, "
+            "emotional beats and how they shifted, any unresolved threads or tensions. Plain prose, 3–5 paragraphs. "
+            "This will be used to reconstruct context when the player resumes the story later."
+        )
+
+    from story import ollama_chat
+    result = ollama_chat(
+        session.get("model", ""),
+        [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": f"Transcript:\n\n{transcript}"},
+        ],
+        stream=False,
+    )
+    return (result or "").strip()
 
 
 def _voice_for(speaker: str, lang: str) -> tuple[str, str]:
@@ -1000,7 +1059,31 @@ session = {
     "story_beats":    [],
     "beat_index":     0,
     "lang":           "en",   # "en" | "ja" — selects segmenter + voice set
+    "story_name":     None,
+    "affinity":       None,
+    "affinity_history": [],
 }
+
+_affinity_lock = threading.Lock()
+
+
+def _score_turn_async(profile_snap, msgs_snap, current_snap, model, lang):
+    delta = affinity.score_turn(profile_snap, msgs_snap, current_snap, model, lang)
+    if not delta:
+        return
+    with _affinity_lock:
+        current = session.get("affinity")
+        if not current:
+            return
+        # Drop if we've fallen too far behind live turns (user typed faster than scorer).
+        if session.get("affinity_turn_counter", current["turn"]) > current["turn"] + 3:
+            return
+        new_current, entry = affinity.apply_delta(current, delta, current["turn"] + 1)
+        session["affinity"] = new_current
+        history = session.setdefault("affinity_history", [])
+        history.append(entry)
+        if len(history) > affinity.HISTORY_CAP:
+            del history[: len(history) - affinity.HISTORY_CAP]
 
 
 @app.route("/")
@@ -1140,6 +1223,15 @@ def analyze():
         # Save enriched profile as JSON (for game use)
         profile_file = summaries_dir / f"{story_name}_profile.json"
         profile_file.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Generate NPC-POV journal entries keyed to story beats
+        try:
+            journal = generate_journal_entries(profile, story_context, model, lang=analyze_lang)
+        except Exception as e:
+            print(f"[journal generation failed: {e!r}]")
+            journal = []
+        journal_file = summaries_dir / f"{story_name}_journal.json"
+        journal_file.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
 
         return {
             "success": True,
@@ -1434,6 +1526,18 @@ def start():
     session["story_beats"]    = profile.get("story_beats", [])
     session["beat_index"]     = 0
     session["lang"]           = story_lang
+    session["story_name"]     = story_name
+    session["affinity"]       = affinity.initial_affinity(profile)
+    session["affinity_history"] = []
+
+    # Load journal entries (NPC-POV memory unlocks) if present.
+    journal_file = summaries_dir / f"{story_name}_journal.json"
+    try:
+        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
+    except Exception:
+        journal = []
+    session["journal"] = journal if isinstance(journal, list) else []
+    session["journal_unlocked"] = set()
 
     return {
         "name":        profile["other_name"],
@@ -1442,6 +1546,7 @@ def start():
         "stage":       profile.get("relationship_stage", ""),
         "summary":     profile.get("story_summary", ""),
         "personality": profile.get("player_personality", []),
+        "affinity":    session["affinity"],
     }
 
 
@@ -1488,7 +1593,23 @@ def _ollama_stream(messages):
     if user_turns:
         _append_log("user", user_turns[-1]["content"])
     _append_log("assistant", assembled)
-    yield f"data: {json.dumps({'done': True})}\n\n"
+
+    # Fire-and-forget affinity scoring on a daemon thread. Snapshots avoid races.
+    if session.get("profile") and session.get("affinity") is not None:
+        session["affinity_turn_counter"] = session["affinity"]["turn"] + 1
+        threading.Thread(
+            target=_score_turn_async,
+            args=(
+                dict(session["profile"]),
+                list(session["messages"][-6:]),
+                dict(session["affinity"]),
+                session["model"],
+                session.get("lang", "en"),
+            ),
+            daemon=True,
+        ).start()
+
+    yield f"data: {json.dumps({'done': True, 'affinity': session.get('affinity')})}\n\n"
 
 
 @app.route("/open", methods=["POST"])
@@ -1506,6 +1627,268 @@ def open_story():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/affinity", methods=["GET"])
+@_require_auth
+def get_affinity():
+    return {
+        "affinity": session.get("affinity"),
+        "history": session.get("affinity_history", []),
+    }
+
+
+@app.route("/recap", methods=["POST"])
+@_require_auth
+def recap():
+    profile = session.get("profile")
+    history = session.get("affinity_history", [])
+    current = session.get("affinity")
+    if not profile or not current:
+        return {"error": "no active session"}, 400
+    if not history:
+        return {"final": current, "history": [], "narrative": ""}
+
+    lang = session.get("lang", "en")
+    narrative = affinity.generate_recap(history, profile, session["model"], lang)
+    affinity.save_final(
+        session.get("story_name") or "",
+        lang,
+        current,
+        history,
+        narrative,
+        current.get("turn", len(history)),
+    )
+    return {
+        "final": {k: current.get(k, 0) for k in ("trust", "intimacy", "tension")},
+        "history": history,
+        "narrative": narrative,
+    }
+
+
+@app.route("/save", methods=["POST"])
+@_require_auth
+def save_session():
+    """Save current session to disk, generating a comprehensive summary."""
+    profile = session.get("profile")
+    if not profile or not session.get("messages"):
+        return {"error": "no active session"}, 400
+
+    story_name = session.get("story_name")
+    if not story_name:
+        return {"error": "story not identified"}, 400
+
+    import datetime
+    lang = session.get("lang", "en")
+    try:
+        summary = _generate_save_summary(lang)
+    except Exception as e:
+        summary = "(Summary generation failed)"
+
+    # Get last N verbatim messages (excluding system prompt)
+    recent = [m for m in session.get("messages", []) if m["role"] != "system"][-6:]
+
+    save_id = f"{story_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dict = {
+        "id": save_id,
+        "story": story_name,
+        "lang": lang,
+        "model": session.get("model", ""),
+        "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "player_name": session.get("player_name", ""),
+        "other_name": session.get("other_name", ""),
+        "other_gender": profile.get("other_gender", ""),
+        "player_gender": profile.get("player_gender", ""),
+        "beat_index": session.get("beat_index", 0),
+        "affinity": session.get("affinity"),
+        "affinity_history": session.get("affinity_history", []),
+        "journal_unlocked": sorted(list(session.get("journal_unlocked", set()))),
+        "summary": summary,
+        "recent_messages": recent,
+    }
+
+    SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = SAVES_DIR / f"{save_id}.json"
+    try:
+        save_path.write_text(json.dumps(save_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        return {"error": f"Failed to save: {e}"}, 500
+
+    return {"save_id": save_id, "saved_at": save_dict["saved_at"]}
+
+
+@app.route("/saves", methods=["GET"])
+@_require_auth
+def list_saves():
+    """List all saved sessions with metadata."""
+    if not SAVES_DIR.exists():
+        return {"saves": []}
+
+    saves = []
+    try:
+        for f in sorted(SAVES_DIR.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                saves.append({
+                    "id": data.get("id", ""),
+                    "story": data.get("story", ""),
+                    "player_name": data.get("player_name", ""),
+                    "other_name": data.get("other_name", ""),
+                    "saved_at": data.get("saved_at", ""),
+                })
+            except (json.JSONDecodeError, OSError):
+                pass
+    except OSError:
+        pass
+
+    return {"saves": saves}
+
+
+@app.route("/saves/<save_id>", methods=["DELETE"])
+@_require_auth
+def delete_save(save_id):
+    """Delete a saved session."""
+    save_id = save_id.strip()
+    if not save_id:
+        return {"error": "no save_id provided"}, 400
+
+    save_path = SAVES_DIR / f"{save_id}.json"
+    if not save_path.exists():
+        return {"error": "save not found"}, 404
+
+    try:
+        save_path.unlink()
+        return {"deleted": True}
+    except OSError as e:
+        return {"error": f"failed to delete: {e}"}, 500
+
+
+@app.route("/resume", methods=["POST"])
+@_require_auth
+def resume_session():
+    """Resume a saved session."""
+    import datetime
+    data = request.json or {}
+    save_id = data.get("save_id", "").strip()
+    if not save_id:
+        return {"error": "no save_id provided"}, 400
+
+    save_path = SAVES_DIR / f"{save_id}.json"
+    if not save_path.exists():
+        return {"error": "save not found"}, 404
+
+    try:
+        save_data = json.loads(save_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"error": "failed to load save"}, 500
+
+    story_name = save_data.get("story", "")
+    story_lang = save_data.get("lang", "en")
+    if story_lang not in ("en", "ja"):
+        story_lang = "en"
+
+    # Load profile from disk
+    summaries_dir = _summaries_dir(story_lang)
+    profile_file = summaries_dir / f"{story_name}_profile.json"
+    if not profile_file.exists():
+        return {"error": "story profile not found"}, 404
+
+    try:
+        profile = json.loads(profile_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"error": "failed to load profile"}, 500
+
+    # Load journal if present
+    journal_file = summaries_dir / f"{story_name}_journal.json"
+    try:
+        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
+    except Exception:
+        journal = []
+
+    # Reconstruct system prompt
+    story_file = _stories_dir(story_lang) / f"{story_name}.txt"
+    try:
+        story_context = story_file.read_text(encoding="utf-8") if story_file.exists() else ""
+    except OSError:
+        story_context = ""
+
+    system_prompt = build_system_prompt(profile, story_context, story_lang)
+
+    # Restore session state
+    session["profile"] = profile
+    session["story_name"] = story_name
+    session["lang"] = story_lang
+    session["model"] = save_data.get("model", "")
+    session["player_name"] = save_data.get("player_name", "")
+    session["other_name"] = save_data.get("other_name", "")
+    session["other_pronoun"] = profile.get("other_pronoun", "she")
+    session["player_pronoun"] = profile.get("player_pronoun", "you")
+    session["secondary_characters"] = profile.get("secondary_characters", {})
+    session["story_beats"] = profile.get("story_beats", [])
+    session["beat_index"] = save_data.get("beat_index", 0)
+    session["affinity"] = save_data.get("affinity")
+    session["affinity_history"] = save_data.get("affinity_history", [])
+    session["journal"] = journal if isinstance(journal, list) else []
+    session["journal_unlocked"] = set(save_data.get("journal_unlocked", []))
+
+    # Assign voices based on gender from save
+    player_gender = save_data.get("player_gender", "male").lower()
+    other_gender = save_data.get("other_gender", "female").lower()
+    session["player_voice"], session["player_lang"] = (
+        (PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG)
+        if player_gender == "male"
+        else (PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG)
+    )
+    session["other_voice"], session["other_lang"] = (
+        (PRIMARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG)
+        if other_gender == "female"
+        else (PRIMARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG)
+    )
+    # If genders match, use secondary voices for player
+    if player_gender == other_gender:
+        if player_gender == "male":
+            session["player_voice"], session["player_lang"] = SECONDARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+        else:
+            session["player_voice"], session["player_lang"] = SECONDARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+
+    # Reconstruct messages: system + summary + recent verbatim
+    messages = [{"role": "system", "content": system_prompt}]
+    if save_data.get("summary"):
+        messages.append({
+            "role": "assistant",
+            "content": f"[STORY SO FAR]\n\n{save_data['summary']}"
+        })
+    messages.extend(save_data.get("recent_messages", []))
+    session["messages"] = messages
+
+    # Create a log file for this resumed session
+    LOGS_DIR.mkdir(exist_ok=True)
+    _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _safe_story = re.sub(r"[^\w\-]", "_", story_name)
+    _log_path = LOGS_DIR / f"{_ts}_{_safe_story}_resumed.md"
+    _log_path.write_text(
+        f"# Resumed Session Log\n\n"
+        f"- **Save ID:** {save_id}\n"
+        f"- **Original Story:** {story_name}\n"
+        f"- **Model:** {session.get('model', '')}\n"
+        f"- **Resumed:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"---\n\n",
+        encoding="utf-8",
+    )
+    session["log_file"] = _log_path
+
+    return {
+        "name": profile.get("other_name", ""),
+        "player_name": save_data.get("player_name", ""),
+        "setting": profile.get("setting", ""),
+        "stage": profile.get("relationship_stage", ""),
+        "summary": profile.get("story_summary", ""),
+        "personality": profile.get("player_personality", []),
+        "affinity": session.get("affinity"),
+        "resumed": True,
+        "beat_index": session.get("beat_index"),
+        "recent_messages": save_data.get("recent_messages", []),
+    }
 
 
 @app.route("/suggest", methods=["POST"])
@@ -1613,11 +1996,13 @@ def chat():
     # but NOT into the stored session history.
     beats = session.get("story_beats", [])
     messages_for_llm = session["messages"]
+    beat_just_fired = None
     if beats:
         turn_count = sum(1 for m in session["messages"] if m["role"] == "user")
         beat_idx = session["beat_index"]
         if turn_count % 3 == 0 and beat_idx < len(beats):
             beat = beats[beat_idx]
+            beat_just_fired = beat_idx
             session["beat_index"] += 1
             nudge = (
                 f"\n\n[Scene director: You have not yet brought this beat into the action — "
@@ -1628,11 +2013,33 @@ def chat():
                 {"role": "user", "content": user_input + nudge}
             ]
 
+    newly_unlocked = _unlock_journal_for_beat(beat_just_fired) if beat_just_fired is not None else []
+
+    def wrapped():
+        for entry in newly_unlocked:
+            yield f"data: {json.dumps({'journal_unlock': {'id': entry['id'], 'title': entry['title'], 'kind': entry['kind']}})}\n\n"
+        yield from _ollama_stream(messages_for_llm)
+
     return Response(
-        stream_with_context(_ollama_stream(messages_for_llm)),
+        stream_with_context(wrapped()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _unlock_journal_for_beat(beat_idx: int) -> list:
+    """Mark all journal entries keyed to `beat_idx` as unlocked. Returns the newly-unlocked entries."""
+    journal = session.get("journal") or []
+    unlocked_ids = session.get("journal_unlocked")
+    if unlocked_ids is None:
+        unlocked_ids = set()
+        session["journal_unlocked"] = unlocked_ids
+    newly = []
+    for entry in journal:
+        if entry.get("unlock_beat") == beat_idx and entry.get("id") not in unlocked_ids:
+            unlocked_ids.add(entry["id"])
+            newly.append(entry)
+    return newly
 
 
 @app.route("/tts", methods=["POST"])
@@ -1703,6 +2110,78 @@ def tts():
         return Response(wav_bytes, mimetype="audio/wav",
                         headers={"Cache-Control": "no-cache"})
 
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.route("/journal", methods=["GET"])
+@_require_auth
+def journal_list():
+    """Return the journal entries for the current session.
+
+    Unlocked entries include full body; locked entries return only title placeholder.
+    """
+    journal = session.get("journal") or []
+    unlocked = session.get("journal_unlocked") or set()
+    items = []
+    for e in journal:
+        if e.get("id") in unlocked:
+            items.append({
+                "id": e["id"],
+                "title": e["title"],
+                "body": e["body"],
+                "kind": e.get("kind", "memory"),
+                "unlocked": True,
+            })
+        else:
+            items.append({
+                "id": e["id"],
+                "title": "???",
+                "kind": e.get("kind", "memory"),
+                "unlocked": False,
+            })
+    return {"entries": items, "unlocked_count": len(unlocked), "total": len(journal)}
+
+
+@app.route("/journal/tts", methods=["POST"])
+@_require_auth
+def journal_tts():
+    """Render a journal entry with the NPC's voice."""
+    if SIMPLE_MODE:
+        return ("", 404)
+    data = request.json or {}
+    entry_id = (data.get("id") or "").strip()
+    if not entry_id:
+        return {"error": "No entry id"}, 400
+    journal = session.get("journal") or []
+    unlocked = session.get("journal_unlocked") or set()
+    entry = next((e for e in journal if e.get("id") == entry_id), None)
+    if not entry or entry_id not in unlocked:
+        return {"error": "Entry not unlocked"}, 404
+
+    try:
+        import numpy as np
+        kokoro = get_kokoro()
+        story_lang = session.get("lang", "en")
+        voice = session.get("other_voice")
+        lang = session.get("other_lang")
+        if not voice:
+            return {"error": "No voice configured"}, 500
+
+        SR = 24000
+        silence = np.zeros(int(SR * 0.18), dtype=np.float32)
+        parts = []
+        text = _scrub_for_tts(entry.get("body", "").strip())
+        for chunk in _chunk_for_tts(text, story_lang):
+            for piece in _synthesize_with_fallback(kokoro, chunk, voice, lang):
+                parts.append(piece)
+                parts.append(silence)
+        if not parts:
+            return {"error": "Nothing to synthesize"}, 400
+        combined = np.concatenate(parts)
+        wav_bytes = _float32_to_wav(combined, SR)
+        return Response(wav_bytes, mimetype="audio/wav",
+                        headers={"Cache-Control": "no-cache"})
     except Exception as e:
         return {"error": str(e)}, 500
 

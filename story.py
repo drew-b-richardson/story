@@ -374,6 +374,102 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
     return profile
 
 
+def generate_journal_entries(profile: dict, story_context: str, model: str, lang: str = "en") -> list:
+    """Generate a pool of NPC-POV journal entries tied to the story beats.
+
+    Each entry: {id, title, body, unlock_beat, kind}. One per beat plus up to
+    two bonus entries. Used by the Memory Unlocks feature to surface backstory
+    collectibles as gameplay progresses.
+    """
+    other_name = profile.get("other_name", "the NPC")
+    other_gender = profile.get("other_gender", "female").lower()
+    personality = ", ".join(profile.get("personality", []))
+    desires = profile.get("desires", "")
+    speech = profile.get("speech_style", "")
+    beats = profile.get("story_beats", []) or []
+    summary = profile.get("story_summary", "")
+    ctx = story_context[:2500]
+
+    if not beats:
+        return []
+
+    ja = (lang == "ja")
+    beat_list = "\n".join(f"{i}. {b}" for i, b in enumerate(beats))
+
+    if ja:
+        prompt = (
+            "【重要】出力は必ず自然な日本語のみ。中国語・英語を混ぜないこと。\n\n"
+            f"物語の文脈：{ctx}\n\n"
+            f"主要キャラクター「{other_name}」（{other_gender}）の一人称視点で、"
+            "日記・手紙・回想などの「ジャーナル断片」を作成してください。"
+            "これらはプレイヤーが物語の節目ごとに解禁する収集要素です。\n\n"
+            f"{other_name}の性格：{personality}\n"
+            f"望み：{desires}\n"
+            f"話し方：{speech}\n\n"
+            f"以下の各ビートに対応する断片を1つずつ作ってください：\n{beat_list}\n\n"
+            "JSON配列のみを返してください。各要素のフィールド：\n"
+            "- title: 短い詩的なタイトル（日本語）\n"
+            "- body: 一人称の短い文章（120〜220字、自然な日本語）\n"
+            "- unlock_beat: 対応するビート番号（整数）\n"
+            "- kind: \"memory\" / \"letter\" / \"dream\" のいずれか\n"
+        )
+    else:
+        prompt = (
+            f"Story context: {ctx}\n\n"
+            f"Write a set of first-person journal snippets from {other_name}'s POV "
+            f"({other_gender}). These are collectible memory fragments — private letters, "
+            "diary entries, or fleeting memories — that a player unlocks as the story "
+            "progresses. Each must sound like an intimate, unguarded moment the NPC "
+            "would never say aloud.\n\n"
+            f"{other_name}'s personality: {personality}\n"
+            f"What they want/fear: {desires}\n"
+            f"Voice: {speech}\n"
+            f"Story summary: {summary}\n\n"
+            f"Write ONE entry keyed to each of these beats:\n{beat_list}\n\n"
+            "Return ONLY a JSON array. Each element must have:\n"
+            "- title: short evocative title (under 8 words)\n"
+            "- body: 80-150 words of first-person prose, no attribution tags, "
+            "no dialogue quotes — pure interior voice\n"
+            "- unlock_beat: integer, the beat index this entry is keyed to\n"
+            "- kind: one of \"memory\", \"letter\", \"dream\"\n"
+        )
+
+    raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False)
+    parsed = _parse_json(raw)
+    if isinstance(parsed, dict):
+        for v in parsed.values():
+            if isinstance(v, list):
+                parsed = v
+                break
+    if not isinstance(parsed, list):
+        return []
+
+    entries = []
+    for i, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("body", "")).strip()
+        title = str(item.get("title", "")).strip()
+        if not body or not title:
+            continue
+        try:
+            unlock_beat = int(item.get("unlock_beat", i))
+        except (TypeError, ValueError):
+            unlock_beat = i
+        unlock_beat = max(0, min(unlock_beat, len(beats) - 1))
+        kind = str(item.get("kind", "memory")).strip().lower()
+        if kind not in ("memory", "letter", "dream"):
+            kind = "memory"
+        entries.append({
+            "id": f"j{i}",
+            "title": title,
+            "body": body,
+            "unlock_beat": unlock_beat,
+            "kind": kind,
+        })
+    return entries
+
+
 def build_system_prompt(profile: dict, story_context: str, lang: str = "en") -> str:
     if lang == "ja":
         return build_system_prompt_ja(profile, story_context)

@@ -21,24 +21,11 @@ from functools import wraps
 from pathlib import Path
 from flask import Flask, request, Response, send_file, stream_with_context
 
-# ── Simple mode (set SIMPLE_MODE=1 to disable TTS, Japanese, and indexing) ──
-SIMPLE_MODE = os.environ.get("SIMPLE_MODE", "").strip() in ("1", "true", "yes")
-_AUTH_PASSWORD = os.environ.get("STORY_PASSWORD", "")
 
 
 def _require_auth(f):
-    """HTTP Basic Auth guard — only active when SIMPLE_MODE is on and a password is set."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if SIMPLE_MODE and _AUTH_PASSWORD:
-            auth = request.authorization
-            if not auth or not secrets.compare_digest(auth.password, _AUTH_PASSWORD):
-                return Response(
-                    "Unauthorized", 401,
-                    {"WWW-Authenticate": 'Basic realm="Story"'},
-                )
-        return f(*args, **kwargs)
-    return decorated
+    """No-op decorator for compatibility."""
+    return f
 
 from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entries, list_models, OLLAMA_URL
 import affinity
@@ -1094,8 +1081,6 @@ def index():
 
 @app.route("/index_stories")
 def index_stories():
-    if SIMPLE_MODE:
-        return ("", 404)
     return send_file("index_stories.html")
 
 
@@ -1147,7 +1132,7 @@ def _extract_story_summary(story_md_path: Path) -> str:
 @app.route("/stories")
 @_require_auth
 def stories():
-    lang = ("en" if SIMPLE_MODE else (request.args.get("lang") or "en")).lower()
+    lang = (request.args.get("lang") or "en").lower()
     analyzed_only = request.args.get("analyzed") == "1"
     src_dir = _stories_dir(lang)
     all_txt = sorted(p.name for p in src_dir.glob("*.txt")) if src_dir.exists() else []
@@ -1169,8 +1154,6 @@ def stories():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    if SIMPLE_MODE:
-        return ("", 404)
     """Analyze a story and save character + story summaries as .md files."""
     data = request.json or {}
     story_name = data.get("story", "").strip()
@@ -1256,8 +1239,6 @@ def check_analysis(story_name):
 
 @app.route("/check-translation/<story_name>")
 def check_translation(story_name):
-    if SIMPLE_MODE:
-        return ("", 404)
     """Check if an English story has already been translated to JA."""
     try:
         story_name = story_name.strip().replace(".txt", "")
@@ -1269,8 +1250,6 @@ def check_translation(story_name):
 
 @app.route("/translate", methods=["POST"])
 def translate():
-    if SIMPLE_MODE:
-        return ("", 404)
     """Stream translate_story.py output as SSE for a given EN story."""
     data = request.json or {}
     story_name = (data.get("story") or "").strip().replace(".txt", "")
@@ -1321,7 +1300,7 @@ def start():
     data = request.json
     model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
-    story_lang = "en" if SIMPLE_MODE else (data.get("lang") or "en").lower()
+    story_lang = (data.get("lang") or "en").lower()
     if story_lang not in ("en", "ja"):
         story_lang = "en"
 
@@ -1397,35 +1376,12 @@ def start():
             ]:
                 profile[pk], profile[ok] = profile.get(ok, ""), profile.get(pk, "")
 
-            # The LLM's story_summary, story_beats, setting, relationship_stage,
-            # and key_behaviors were written with the ORIGINAL player/other names
-            # baked in — so after the role swap they still narrate the arc from
-            # the wrong character's POV. Flip the two names inside those strings
-            # so the narrative re-centers on the new player.
-            orig_player = profile.get("other_name", "")   # post-swap, this was the old player
-            orig_other  = profile.get("player_name", "")  # post-swap, this was the old other
-            if orig_player and orig_other and orig_player != orig_other:
-                sentinel = "\x00SWAP\x00"
-                def _flip(text: str) -> str:
-                    if not text:
-                        return text
-                    if story_lang == "ja":
-                        text = text.replace(orig_player, sentinel)
-                        text = text.replace(orig_other, orig_player)
-                        text = text.replace(sentinel, orig_other)
-                    else:
-                        text = re.sub(rf'\b{re.escape(orig_player)}\b', sentinel, text)
-                        text = re.sub(rf'\b{re.escape(orig_other)}\b',  orig_player, text)
-                        text = text.replace(sentinel, orig_other)
-                    return text
-                for key in ("story_summary", "setting", "relationship_stage",
-                            "speech_style", "affection_style", "dealbreakers"):
-                    if isinstance(profile.get(key), str):
-                        profile[key] = _flip(profile[key])
-                for key in ("story_beats", "key_behaviors"):
-                    items = profile.get(key)
-                    if isinstance(items, list):
-                        profile[key] = [_flip(s) if isinstance(s, str) else s for s in items]
+            # story_summary, story_beats, setting etc. describe events in the
+            # original story and must NOT be name-flipped.  The system prompt
+            # already tells the model who "you" are and who the NPC is, so the
+            # model can interpret unchanged beats correctly.  Flipping names here
+            # used to invert story roles (e.g. making the masseuse the client)
+            # because beats describe *what happens*, not who the player is.
 
     other_gender  = profile.get("other_gender", "female").lower()
     player_gender = profile.get("player_gender", "male").lower()
@@ -2044,8 +2000,6 @@ def _unlock_journal_for_beat(beat_idx: int) -> list:
 
 @app.route("/tts", methods=["POST"])
 def tts():
-    if SIMPLE_MODE:
-        return ("", 404)
     data = request.json or {}
     text = data.get("text", "").strip()
     if not text:
@@ -2147,8 +2101,6 @@ def journal_list():
 @_require_auth
 def journal_tts():
     """Render a journal entry with the NPC's voice."""
-    if SIMPLE_MODE:
-        return ("", 404)
     data = request.json or {}
     entry_id = (data.get("id") or "").strip()
     if not entry_id:
@@ -2188,16 +2140,12 @@ def journal_tts():
 
 @app.route("/kokoro_test")
 def kokoro_test():
-    if SIMPLE_MODE:
-        return ("", 404)
     return send_file("kokoro_test.html")
 
 
 @app.route("/tts_preview", methods=["POST"])
 def tts_preview():
     """Render a short sample monologue in a specific Kokoro voice."""
-    if SIMPLE_MODE:
-        return ("", 404)
     data = request.json or {}
     voice = data.get("voice", "").strip()
     lang  = data.get("lang", "en-us").strip()
@@ -2226,9 +2174,8 @@ def tts_preview():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print("Story Roleplay Server" + (" [SIMPLE MODE]" if SIMPLE_MODE else ""))
+    print("Story Roleplay Server")
     print(f"Open http://localhost:{port} in your browser")
-    if not SIMPLE_MODE:
-        # Pre-warm kokoro in background so first TTS call is fast
-        threading.Thread(target=get_kokoro, daemon=True).start()
+    # Pre-warm kokoro in background so first TTS call is fast
+    threading.Thread(target=get_kokoro, daemon=True).start()
     app.run(debug=False, port=port, threaded=True)

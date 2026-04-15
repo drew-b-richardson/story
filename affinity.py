@@ -96,15 +96,15 @@ def _safe_chat(model: str, messages: list, temperature: float = 0.2, timeout: in
 def initial_affinity(profile: dict) -> dict:
     stage = (profile.get("relationship_stage") or "").lower()
     if "stranger" in stage or "見知らぬ" in stage or "初対面" in stage:
-        base = {"trust": 3, "intimacy": 1, "tension": 4}
+        base = {"trust": 3, "intimacy": 0, "tension": 4}
     elif "estranged" in stage or "疎遠" in stage or "別れ" in stage:
-        base = {"trust": 3, "intimacy": 5, "tension": 7}
+        base = {"trust": 3, "intimacy": 0, "tension": 7}
     elif "lover" in stage or "partner" in stage or "恋人" in stage or "夫婦" in stage:
-        base = {"trust": 7, "intimacy": 7, "tension": 3}
+        base = {"trust": 7, "intimacy": 0, "tension": 3}
     elif "friend" in stage or "友" in stage:
-        base = {"trust": 6, "intimacy": 4, "tension": 2}
+        base = {"trust": 6, "intimacy": 0, "tension": 2}
     else:
-        base = dict(DEFAULT_AFFINITY)
+        base = {"trust": 5, "intimacy": 0, "tension": 3}
     return {**base, "turn": 0, "last_reason": "", "updated_at": time.time()}
 
 

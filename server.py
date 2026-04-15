@@ -1354,9 +1354,11 @@ def start():
 
     # If the user requested a specific gender, swap player/other roles when needed.
     preferred_gender = data.get("player_gender", "auto").lower()
+    role_swapped = False
     if preferred_gender in ("male", "female"):
         assigned_player_gender = profile.get("player_gender", "male").lower()
         if assigned_player_gender != preferred_gender:
+            role_swapped = True
             # Swap all player ↔ other fields so the user plays the right character.
             # NPC-only fields (speech_style, affection_style, key_behaviors,
             # dealbreakers) have no player counterpart — they transfer to whoever
@@ -1486,10 +1488,27 @@ def start():
     session["affinity"]       = affinity.initial_affinity(profile)
     session["affinity_history"] = []
 
-    # Load journal entries (NPC-POV memory unlocks) if present.
+    # Load journal entries (NPC-POV memory unlocks).
+    # The cached journal is always written for the original NPC.  If a role swap
+    # occurred the NPC changed, so we regenerate the journal for the new NPC and
+    # cache it under a separate filename (keyed by the current other_name) so
+    # both versions can coexist on disk without re-analysis.
+    _cur_other = profile.get("other_name", "")
+    _safe_other = re.sub(r"[^\w]", "_", _cur_other.lower())
     journal_file = summaries_dir / f"{story_name}_journal.json"
+    journal_file_swapped = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
     try:
-        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
+        if role_swapped:
+            if journal_file_swapped.exists():
+                journal = json.loads(journal_file_swapped.read_text(encoding="utf-8"))
+            else:
+                journal = generate_journal_entries(profile, story_context, model, lang=story_lang)
+                try:
+                    journal_file_swapped.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+        else:
+            journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
     except Exception:
         journal = []
     session["journal"] = journal if isinstance(journal, list) else []
@@ -1754,10 +1773,14 @@ def resume_session():
     except (json.JSONDecodeError, OSError):
         return {"error": "failed to load profile"}, 500
 
-    # Load journal if present
-    journal_file = summaries_dir / f"{story_name}_journal.json"
+    # Load journal — prefer swapped variant if one was generated for this NPC.
+    _saved_other = save_data.get("other_name", profile.get("other_name", ""))
+    _safe_other  = re.sub(r"[^\w]", "_", _saved_other.lower())
+    journal_file_swapped = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
+    journal_file_default = summaries_dir / f"{story_name}_journal.json"
+    _jf = journal_file_swapped if journal_file_swapped.exists() else journal_file_default
     try:
-        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
+        journal = json.loads(_jf.read_text(encoding="utf-8")) if _jf.exists() else []
     except Exception:
         journal = []
 
@@ -1782,8 +1805,8 @@ def resume_session():
     session["secondary_characters"] = profile.get("secondary_characters", {})
     session["story_beats"] = profile.get("story_beats", [])
     session["beat_index"] = save_data.get("beat_index", 0)
-    session["affinity"] = save_data.get("affinity")
-    session["affinity_history"] = save_data.get("affinity_history", [])
+    session["affinity"] = affinity.initial_affinity(profile)
+    session["affinity_history"] = []
     session["journal"] = journal if isinstance(journal, list) else []
     session["journal_unlocked"] = set(save_data.get("journal_unlocked", []))
 
@@ -1921,6 +1944,10 @@ def suggest():
         except json.JSONDecodeError:
             # Malformed JSON — extract quoted strings directly as a fallback
             suggestions = re.findall(r'"((?:[^"\\]|\\.)+)"', content)[:3]
+
+        # Drop anything that's too short to be a real action (stray punctuation,
+        # JSON key names, single words the regex picked up by mistake).
+        suggestions = [s for s in suggestions if len(s.strip()) >= 10]
 
     except Exception as e:
         print(f"Suggest error: {e!r}")

@@ -844,6 +844,14 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════ SAVE MODAL -->
+<div id="save-modal" role="dialog" aria-modal="true" aria-label="Saving…" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:2rem 2.5rem; text-align:center; color:var(--text);">
+    <div style="font-size:1.6rem; margin-bottom:0.6rem;">💾</div>
+    <div style="font-size:0.95rem; color:var(--muted);">Saving… this could take a while</div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════════════════════════════ RECAP MODAL -->
 <div id="recap-modal" role="dialog" aria-modal="true">
   <div id="recap-card">
@@ -1198,9 +1206,12 @@ $('btn-save').addEventListener('click', async () => {
   $('btn-save').disabled = true;
   const orig = $('btn-save').textContent;
   $('btn-save').textContent = '…';
+  const modal = $('save-modal');
+  modal.style.display = 'flex';
   try {
     const res = await fetch('/save', { method: 'POST' });
     const data = await res.json();
+    modal.style.display = 'none';
     if (data.save_id) {
       $('btn-save').textContent = '✓';
       setTimeout(() => { $('btn-save').textContent = orig; $('btn-save').disabled = false; }, 2000);
@@ -1209,6 +1220,7 @@ $('btn-save').addEventListener('click', async () => {
       $('btn-save').disabled = false;
     }
   } catch {
+    modal.style.display = 'none';
     $('btn-save').textContent = orig;
     $('btn-save').disabled = false;
   }

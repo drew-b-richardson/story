@@ -284,16 +284,25 @@
                     const hasAnalysis = await checkIfAnalyzed(storyName, URL_LANG);
                     if (hasAnalysis) item.classList.add('analyzed');
 
-                    let analyzeLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
                     let translateBtn = '';
+                    let analyzeBtn = '';
                     let translateLog = '';
 
-                    // Translate button and checks: only when lang=ja param is set
                     if (URL_LANG === 'ja') {
+                        // Translate button: always shown in JA mode (story exists in stories/)
                         const hasTranslation = await checkIfTranslated(storyName);
                         const tLabel = hasTranslation ? 'Re-translate' : 'Translate →日';
                         translateBtn = `<button class="btn-translate" id="tbtn-${storyName}" onclick="translateStory('${storyName}')">${tLabel}</button>`;
                         translateLog = `<div class="translate-log" id="tlog-${storyName}"></div>`;
+
+                        // Analyze button: only shown if JA version exists in stories_ja/
+                        if (hasTranslation) {
+                            const analyzeLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
+                            analyzeBtn = `<button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">${analyzeLabel}</button>`;
+                        }
+                    } else {
+                        const analyzeLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
+                        analyzeBtn = `<button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">${analyzeLabel}</button>`;
                     }
 
                     item.innerHTML = `
@@ -301,10 +310,8 @@
                         <div class="status" id="status-${storyName}">
                             ${hasAnalysis ? '✓ Done' : 'Ready'}
                         </div>
-                        <button class="btn-analyze" id="btn-${storyName}" onclick="analyzeStory('${storyName}')">
-                            ${analyzeLabel}
-                        </button>
                         ${translateBtn}
+                        ${analyzeBtn}
                     `;
                     list.appendChild(item);
                     if (translateLog) {

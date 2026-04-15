@@ -62,13 +62,15 @@ def extract_glossary(text: str, model: str) -> dict:
     sample = text[:6000]
     prompt = (
         "Read the following English text and extract every proper name: "
-        "characters, places, distinctive nicknames. For each, provide the "
-        "Japanese rendering you would use if translating this story — "
-        "katakana for foreign names, existing kanji/hiragana for names that "
-        "are already Japanese. Be consistent. Output ONLY a JSON object "
-        "mapping the original name to its Japanese rendering, with no "
-        "commentary or code fences. Example: "
-        '{"Sarah": "サラ", "James": "ジェームズ"}\n\n'
+        "characters, places, distinctive nicknames. For each Western or "
+        "foreign character name, assign a natural Japanese given name written "
+        "in kanji/hiragana that fits the character's feel — do NOT use "
+        "katakana transliterations of the English name. Choose names a real "
+        "Japanese person would actually be given. For place names or objects "
+        "with no natural Japanese equivalent, katakana is acceptable. "
+        "Be consistent. Output ONLY a JSON object mapping the original name "
+        "to its Japanese rendering, with no commentary or code fences. "
+        'Example: {"Sarah": "咲良", "James": "純", "Marco": "蓮"}\n\n'
         f"TEXT:\n{sample}"
     )
     raw = ollama_chat(model, [{"role": "user", "content": prompt}])

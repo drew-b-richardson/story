@@ -611,6 +611,20 @@
   #messages::-webkit-scrollbar-track { background: transparent; }
   #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 
+  .recap-block {
+    align-self: center;
+    max-width: 90%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.92em;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
   .msg {
     display: flex;
     gap: 0.7rem;
@@ -1159,13 +1173,13 @@ async function resumeSession(saveId) {
     currentAffinityHistory = [];
     updateAffinityDot(currentAffinity);
 
-    // Render recent messages
+    // Show the session summary as a recap
     $('messages').innerHTML = '';
-    if (data.recent_messages && Array.isArray(data.recent_messages)) {
-      data.recent_messages.forEach(m => {
-        if (m.role === 'user') appendMessage('user', m.content);
-        else if (m.role === 'assistant') appendMessage('her', m.content);
-      });
+    if (data.summary) {
+      const recap = document.createElement('div');
+      recap.className = 'recap-block';
+      recap.textContent = data.summary;
+      $('messages').appendChild(recap);
     }
 
     setStatus('');

@@ -23,7 +23,7 @@ STORY_CHAR_LIMIT = 8000
 NUM_CTX = 8192  # context window passed to every Ollama call
 
 
-def ollama_chat(model: str, messages: list, stream: bool = True) -> str:
+def ollama_chat(model: str, messages: list, stream: bool = True, timeout: int | None = 120) -> str:
     payload = json.dumps({
         "model": model,
         "messages": messages,
@@ -39,7 +39,7 @@ def ollama_chat(model: str, messages: list, stream: bool = True) -> str:
 
     full_response = []
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if stream:
                 for line in resp:
                     line = line.strip()
@@ -97,6 +97,36 @@ def _parse_json(raw: str) -> dict | list | None:
     return None
 
 
+def _normalize_to_char_keys(parsed: dict) -> dict:
+    """Convert a player_/other_ keyed LLM response to the canonical char_a/char_b format.
+
+    The LLM reliably outputs player_name/other_name field names. We rename them here
+    so the profile stores two symmetric characters without pre-assigning who is "the player".
+    _assign_roles() maps char_a/char_b → player_*/other_* at game start based on the
+    user's gender selection.
+    """
+    # Fields that map directly with a prefix change
+    direct = [
+        "name", "gender",
+        "personality", "speech_style", "affection_style", "key_behaviors",
+        "desires", "dealbreakers",
+        "appearance", "hair", "eyes", "scent", "clothing_style",
+        "loves", "hates",
+    ]
+    profile: dict = {}
+    for field in direct:
+        profile[f"char_a_{field}"] = parsed.get(f"player_{field}", parsed.get(f"char_a_{field}", ""))
+        profile[f"char_b_{field}"] = parsed.get(f"other_{field}", parsed.get(f"char_b_{field}", ""))
+
+    # Passthrough fields that aren't character-specific
+    for key in ("setting", "relationship_stage", "story_summary",
+                "secondary_characters", "story_beats"):
+        if key in parsed:
+            profile[key] = parsed[key]
+
+    return profile
+
+
 def analyze_story(story_text: str, model: str, lang: str = "en") -> dict:
     """Extract character profiles and story context from the text.
 
@@ -148,69 +178,90 @@ def analyze_story(story_text: str, model: str, lang: str = "en") -> dict:
                 ),
             }
         ]
-        story_context = ollama_chat(model, summary_messages, stream=False)
+        story_context = ollama_chat(model, summary_messages, stream=False, timeout=600)
     else:
         story_context = story_text
 
-    # Now extract structured character profile
+    # Now extract structured character profile.
+    # We use player_name/other_name in the prompt because local LLMs reliably follow this
+    # naming. After parsing we normalize to char_a/char_b so neither character is
+    # pre-labelled "the player" in storage — that assignment happens at game start.
     analysis_messages = [
         {
             "role": "user",
             "content": (
                 f"{lang_note_analysis}"
                 "Based on this story (or summary), identify the two main characters. "
-                "The player character is the protagonist or POV character. "
-                "The other character is their primary counterpart (romantic interest, etc). "
                 "Return ONLY a JSON object with these fields:\n"
-                "- player_name: name of the character the user will play (use a real name, never 'You' or a pronoun)\n"
+                "- player_name: name of the first/more prominent main character (a real name, never a pronoun)\n"
                 "- player_gender: 'male' or 'female'\n"
-                "- other_name: name of the primary character the AI will portray (use a real name, never 'Her' or a pronoun)\n"
+                "- other_name: name of the second main character (a real name, never a pronoun)\n"
                 "- other_gender: 'male' or 'female'\n"
-                "- personality: array of personality traits for other_name\n"
-                "- speech_style: how other_name talks, vocabulary, tone\n"
-                "- affection_style: how other_name shows love/interest\n"
-                "- key_behaviors: specific things other_name does or says in the story\n"
-                "- desires: what other_name wants, fears, and needs emotionally\n"
-                "- dealbreakers: things that would push other_name away or make them withdraw\n"
-                "- setting: where/when the story takes place\n"
+                "— Full details for player_name —\n"
+                "- player_personality: array of personality traits\n"
+                "- player_speech_style: how player_name talks, vocabulary, tone\n"
+                "- player_affection_style: how player_name shows love/interest\n"
+                "- player_key_behaviors: specific things player_name does or says\n"
+                "- player_desires: what player_name wants, fears, needs emotionally\n"
+                "- player_dealbreakers: things that push player_name away\n"
+                "- player_appearance: height, build, face shape, skin tone, age\n"
+                "- player_hair: hair color, length, texture, typical style\n"
+                "- player_eyes: eye color, shape, notable quality\n"
+                "- player_scent: characteristic scent or perfume\n"
+                "- player_clothing_style: how player_name typically dresses\n"
+                "— Full details for other_name —\n"
+                "- other_personality: array of personality traits\n"
+                "- other_speech_style: how other_name talks, vocabulary, tone\n"
+                "- other_affection_style: how other_name shows love/interest\n"
+                "- other_key_behaviors: specific things other_name does or says\n"
+                "- other_desires: what other_name wants, fears, needs emotionally\n"
+                "- other_dealbreakers: things that push other_name away\n"
+                "- other_appearance: height, build, face shape, skin tone, age\n"
+                "- other_hair: hair color, length, texture, typical style\n"
+                "- other_eyes: eye color, shape, notable quality\n"
+                "- other_scent: characteristic scent or perfume\n"
+                "- other_clothing_style: how other_name typically dresses\n"
+                "— Story context —\n"
+                "- setting: where/when the story takes place. If the story does not explicitly name a city or country, choose a specific, beautiful, romantic, or adventurous real-world location — somewhere evocative like Paris, Barcelona, Kyoto, Positano, Bali, Santorini, Marrakech, Lisbon, or a similar bucket-list destination. Name the city and country, and add 1-2 sentences describing the atmosphere of the locale (e.g. the light, the sounds, the season).\n"
                 "- relationship_stage: where they are at the start (strangers, friends, dating, etc)\n"
-                "- story_summary: 3-4 sentence summary of the story arc\n"
-                "- secondary_characters: array of at most TWO supporting characters (not the two leads) — at most one male and at most one female. If the story has several side characters of the same gender, pick the most significant one and ignore the rest. Each object has 'name' and 'gender' ('male' or 'female'). If none, use an empty array.\n"
+                "- story_summary: 3-4 sentence summary of the story arc using the characters' real names\n"
+                "- secondary_characters: array of at most TWO supporting characters (not the two leads) — at most one male and at most one female. Each object has 'name' and 'gender' ('male' or 'female'). If none, use an empty array.\n"
                 "- story_beats: array of 5-8 story beats. Each beat must be 2-3 sentences covering: "
                 "(1) the scene setup or situation, (2) the emotional tension or stakes, "
                 "(3) a concrete sensory detail or specific action that could spark it. "
-                "Write as a situation to CREATE, not an outcome — "
-                "e.g. 'They end up alone together for the first time, the usual noise of the world gone quiet around them. "
-                "Something unspoken has been building and the proximity makes it undeniable. "
-                "A brush of hands reaching for the same thing, or a long silence that stretches too long, could be the spark.' "
-                "NOT just 'they kiss'\n"
-                "- appearance: detailed physical description of other_name — height, build, face shape, skin tone, age\n"
-                "- hair: other_name's hair color, length, texture, and typical style\n"
-                "- eyes: other_name's eye color, shape, and any notable quality\n"
-                "- scent: other_name's characteristic scent or perfume if mentioned, otherwise infer something fitting\n"
-                "- clothing_style: how other_name typically dresses, fabrics, colors, formality\n\n"
+                "Write as a situation to CREATE, not an outcome. "
+                "CRITICAL: use character names (player_name, other_name) in beats — NEVER 'you', 'I', or bare pronouns. "
+                "Write from a neutral third-person observer perspective.\n\n"
                 f"STORY/SUMMARY:\n{story_context}"
             ),
         }
     ]
 
-    raw = ollama_chat(model, analysis_messages, stream=False)
+    raw = ollama_chat(model, analysis_messages, stream=False, timeout=600)
 
-    profile = _parse_json(raw)
-    if not isinstance(profile, dict):
-        profile = {
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, dict):
+        parsed = {
             "player_name": "Alex",
             "player_gender": "male",
             "other_name": "Sarah",
             "other_gender": "female",
-            "personality": ["warm", "romantic", "expressive"],
-            "speech_style": "warm and intimate",
-            "affection_style": "tender and direct",
-            "key_behaviors": [],
+            "player_personality": ["warm", "romantic", "expressive"],
+            "player_speech_style": "warm and intimate",
+            "player_affection_style": "tender and direct",
+            "player_key_behaviors": [],
+            "other_personality": ["warm", "romantic", "expressive"],
+            "other_speech_style": "warm and intimate",
+            "other_affection_style": "tender and direct",
+            "other_key_behaviors": [],
             "setting": "contemporary",
             "relationship_stage": "budding romance",
             "story_summary": raw[:500],
         }
+
+    # Normalize player_/other_ → char_a/char_b so neither is pre-labelled as "the player".
+    # _assign_roles() will map char_a/char_b → player_*/other_* at game start.
+    profile = _normalize_to_char_keys(parsed)
 
     return profile, story_context
 
@@ -222,10 +273,8 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
       Pass B — one call per secondary character with full physical/personality details
     All missing values are invented; never leaves fields empty.
     """
-    player_name  = profile.get("player_name", "the player character")
-    player_gender = profile.get("player_gender", "male")
-    other_name   = profile.get("other_name", "the NPC")
-    other_gender  = profile.get("other_gender", "female")
+    char_a_name = profile.get("char_a_name", "Alex")
+    char_b_name = profile.get("char_b_name", "Sarah")
     ctx = story_context[:3000]
 
     ja = (lang == "ja")
@@ -251,7 +300,9 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
         if ja else ""
     )
 
-    # ── Pass A: primary characters ────────────────────────────
+    # ── Pass A: enrich both characters symmetrically ────────────────────────────
+    # Use player_/other_ naming in the prompt (LLMs follow this reliably),
+    # then normalize to char_a/char_b after parsing.
     if ja:
         pass_a_body = (
             f"{lang_note}"
@@ -259,49 +310,68 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
             f"二人の主人公について詳細なキャラクター情報を日本語で提供してください。"
             f"物語から読み取れる部分はそれを使い、書かれていない部分は具体的に創作してください。\n\n"
             f"以下のフィールドを持つJSONオブジェクトのみを返してください：\n"
-            f"- player_appearance: {player_name}の身長・体型・顔・肌の色・年齢を一文で{flat_hint}\n"
-            f"- player_hair: {player_name}の髪（色・長さ・質感・スタイル）を一文で{flat_hint}\n"
-            f"- player_eyes: {player_name}の目（色・形・印象）を一文で{flat_hint}\n"
-            f"- player_scent: {player_name}の特徴的な香りを一文で{flat_hint}\n"
-            f"- player_clothing_style: {player_name}の服装スタイルを一文で{flat_hint}\n"
-            f"- player_personality: {player_name}の性格特性4〜5個の配列\n"
-            f"- player_desires: {player_name}が感情的に求めていること・恐れていること\n"
-            f"- player_loves: {player_name}が好きなもの5個の配列（物語の描写を優先し、足りなければ感覚的な具体例を創作）\n"
-            f"- player_hates: {player_name}が嫌いなもの4個の配列\n"
-            f"- other_loves: {other_name}が好きなもの5個の配列（物語優先、不足分は創作）\n"
-            f"- other_hates: {other_name}が嫌いなもの4個の配列\n"
+            f"- player_appearance: {char_a_name}の身長・体型・顔・肌の色・年齢を一文で{flat_hint}\n"
+            f"- player_hair: {char_a_name}の髪（色・長さ・質感・スタイル）を一文で{flat_hint}\n"
+            f"- player_eyes: {char_a_name}の目（色・形・印象）を一文で{flat_hint}\n"
+            f"- player_scent: {char_a_name}の特徴的な香りを一文で{flat_hint}\n"
+            f"- player_clothing_style: {char_a_name}の服装スタイルを一文で{flat_hint}\n"
+            f"- player_personality: {char_a_name}の性格特性4〜5個の配列\n"
+            f"- player_desires: {char_a_name}が感情的に求めていること・恐れていること\n"
+            f"- player_loves: {char_a_name}が好きなもの5個の配列（物語の描写を優先し、足りなければ感覚的な具体例を創作）\n"
+            f"- player_hates: {char_a_name}が嫌いなもの4個の配列\n"
+            f"- other_appearance: {char_b_name}の身長・体型・顔・肌の色・年齢を一文で{flat_hint}\n"
+            f"- other_hair: {char_b_name}の髪（色・長さ・質感・スタイル）を一文で{flat_hint}\n"
+            f"- other_eyes: {char_b_name}の目（色・形・印象）を一文で{flat_hint}\n"
+            f"- other_scent: {char_b_name}の特徴的な香りを一文で{flat_hint}\n"
+            f"- other_clothing_style: {char_b_name}の服装スタイルを一文で{flat_hint}\n"
+            f"- other_personality: {char_b_name}の性格特性4〜5個の配列\n"
+            f"- other_desires: {char_b_name}が感情的に求めていること・恐れていること\n"
+            f"- other_loves: {char_b_name}が好きなもの5個の配列（物語優先、不足分は創作）\n"
+            f"- other_hates: {char_b_name}が嫌いなもの4個の配列\n"
         )
     else:
         pass_a_body = (
             f"{lang_note}"
             f"Story context: {ctx}\n\n"
-            f"Provide detailed character information for the two leads. "
+            f"Provide detailed character information for both main characters. "
             f"Pull from the story where possible. For anything not in the story, "
             f"INVENT vivid, specific details — never use vague placeholders.\n\n"
             f"Return ONLY a JSON object with these exact fields:\n"
-            f"- player_appearance: one sentence describing {player_name}'s height, build, face, skin tone, age.\n"
-            f"- player_hair: one sentence describing {player_name}'s hair (color, length, texture, style combined).\n"
-            f"- player_eyes: one sentence describing {player_name}'s eyes (color, shape, quality combined).\n"
-            f"- player_scent: one sentence describing {player_name}'s characteristic scent.\n"
-            f"- player_clothing_style: one sentence describing how {player_name} typically dresses.\n"
-            f"- player_personality: array of 4-5 traits for {player_name}\n"
-            f"- player_desires: what {player_name} wants and fears emotionally\n"
-            f"- player_loves: array of 5 things {player_name} loves — use story moments first, "
+            f"- player_appearance: one sentence describing {char_a_name}'s height, build, face, skin tone, age.\n"
+            f"- player_hair: one sentence describing {char_a_name}'s hair (color, length, texture, style combined).\n"
+            f"- player_eyes: one sentence describing {char_a_name}'s eyes (color, shape, quality combined).\n"
+            f"- player_scent: one sentence describing {char_a_name}'s characteristic scent.\n"
+            f"- player_clothing_style: one sentence describing how {char_a_name} typically dresses.\n"
+            f"- player_personality: array of 4-5 traits for {char_a_name}\n"
+            f"- player_desires: what {char_a_name} wants and fears emotionally\n"
+            f"- player_loves: array of 5 things {char_a_name} loves — use story moments first, "
             f"then invent sensory specifics (e.g. 'the sound of rain against a window')\n"
-            f"- player_hates: array of 4 things {player_name} dislikes — from story or invented\n"
-            f"- other_loves: array of 5 things {other_name} loves — story moments first, "
+            f"- player_hates: array of 4 things {char_a_name} dislikes — from story or invented\n"
+            f"- other_appearance: one sentence describing {char_b_name}'s height, build, face, skin tone, age.\n"
+            f"- other_hair: one sentence describing {char_b_name}'s hair (color, length, texture, style combined).\n"
+            f"- other_eyes: one sentence describing {char_b_name}'s eyes (color, shape, quality combined).\n"
+            f"- other_scent: one sentence describing {char_b_name}'s characteristic scent.\n"
+            f"- other_clothing_style: one sentence describing how {char_b_name} typically dresses.\n"
+            f"- other_personality: array of 4-5 traits for {char_b_name}\n"
+            f"- other_desires: what {char_b_name} wants and fears emotionally\n"
+            f"- other_loves: array of 5 things {char_b_name} loves — story moments first, "
             f"then invent (e.g. 'fingers tracing the back of a hand')\n"
-            f"- other_hates: array of 4 things {other_name} dislikes — from story or invented\n"
+            f"- other_hates: array of 4 things {char_b_name} dislikes — from story or invented\n"
         )
 
-    raw_a = ollama_chat(model, [{"role": "user", "content": pass_a_body}], stream=False)
+    raw_a = ollama_chat(model, [{"role": "user", "content": pass_a_body}], stream=False, timeout=600)
 
-    enrichment = _parse_json(raw_a)
-    if enrichment and isinstance(enrichment, dict):
+    enrichment_raw = _parse_json(raw_a)
+    if enrichment_raw and isinstance(enrichment_raw, dict):
+        # Normalize player_/other_ → char_a/char_b and merge into profile
+        enrichment = _normalize_to_char_keys(enrichment_raw)
         for key in (
-            "player_appearance", "player_hair", "player_eyes", "player_scent",
-            "player_clothing_style", "player_personality", "player_desires",
-            "player_loves", "player_hates", "other_loves", "other_hates",
+            "char_a_appearance", "char_a_hair", "char_a_eyes", "char_a_scent",
+            "char_a_clothing_style", "char_a_personality", "char_a_desires",
+            "char_a_loves", "char_a_hates",
+            "char_b_appearance", "char_b_hair", "char_b_eyes", "char_b_scent",
+            "char_b_clothing_style", "char_b_personality", "char_b_desires",
+            "char_b_loves", "char_b_hates",
         ):
             if enrichment.get(key):
                 profile[key] = enrichment[key]
@@ -352,7 +422,7 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
                 f"  loves (array of 3 specific things),\n"
                 f"  hates (array of 2 specific things)\n"
             )
-        raw_b = ollama_chat(model, [{"role": "user", "content": pass_b_body}], stream=False)
+        raw_b = ollama_chat(model, [{"role": "user", "content": pass_b_body}], stream=False, timeout=600)
 
         enriched_list = _parse_json(raw_b)
         # Handle LLMs that wrap the array in an object
@@ -434,7 +504,7 @@ def generate_journal_entries(profile: dict, story_context: str, model: str, lang
             "- kind: one of \"memory\", \"letter\", \"dream\"\n"
         )
 
-    raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False)
+    raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False, timeout=600)
     parsed = _parse_json(raw)
     if isinstance(parsed, dict):
         for v in parsed.values():
@@ -562,6 +632,7 @@ This is a conversation, not a performance. You write one beat. The user responds
 - Never railroad. If the user takes the story in an unexpected direction, follow it — but keep {other_name}'s personality, desires, and dealbreakers consistent.
 - When the story reaches a beat naturally, let it breathe. Don't rush to the next one.
 - Use all five senses. Scent, texture, sound, and temperature make scenes feel real.
+- THE SETTING IS A CHARACTER: Actively weave the sights, sounds, smells, and textures of {setting} into every scene. Let the city breathe around them — the ambient noise of a market, the specific quality of afternoon light on cobblestones, the smell of street food or salt air, the hum of a foreign language nearby. The player should feel the destination as vividly as they feel the romance.
 - {other_name}'s dialogue should sound like {obj}, not like a narrator summarizing {poss} feelings.
 
 THINGS TO NEVER DO:
@@ -668,6 +739,7 @@ def build_system_prompt_ja(profile: dict, story_context: str) -> str:
 ・ユーザーの選択は本当に物語を変える。{player_name}の言葉次第で{other_name}は冷たくもなり、心を開きもする。
 ・レールを敷かない。ユーザーが意外な方向に進めたら、{other_name}の性格・望み・地雷を保ったまま、それに従う。
 ・五感を使うこと。香り、手触り、音、温度でシーンを現実にする。
+・舞台は物語のキャラクターである: 毎回のシーンに{setting}の光景・音・香り・質感を積極的に織り込むこと。街の喧騒、石畳に落ちる午後の光、異国の言語のざわめき、潮風の匂いなど、場所を読者が実感できるように描写すること。
 ・{other_name}のセリフは、{pron}自身の言葉として書くこと。語り手が気持ちを要約するのではなく。
 
 【してはいけないこと】
@@ -680,6 +752,44 @@ def build_system_prompt_ja(profile: dict, story_context: str) -> str:
 ・第四の壁を破ること、作者として語ること
 ・「彼女」「彼」「ナレーター」などを名前代わりに使うこと。全員に実名があること。
 ・ASCIIの引用符（"）を使うこと。必ず「」を使うこと。"""
+
+
+def _assign_roles(profile: dict, player_key: str) -> None:
+    """Populate player_* and other_* fields in-place from char_a/char_b data.
+
+    player_key: 'a' or 'b' — which char becomes the player.
+    Modifies profile in place; called once at game start (never during analysis).
+    """
+    other_key = "b" if player_key == "a" else "a"
+    p, o = f"char_{player_key}_", f"char_{other_key}_"
+
+    profile["player_name"]          = profile.get(f"{p}name", "Alex")
+    profile["player_gender"]        = profile.get(f"{p}gender", "male")
+    profile["player_appearance"]    = profile.get(f"{p}appearance", "")
+    profile["player_hair"]          = profile.get(f"{p}hair", "")
+    profile["player_eyes"]          = profile.get(f"{p}eyes", "")
+    profile["player_scent"]         = profile.get(f"{p}scent", "")
+    profile["player_clothing_style"]= profile.get(f"{p}clothing_style", "")
+    profile["player_personality"]   = profile.get(f"{p}personality", [])
+    profile["player_desires"]       = profile.get(f"{p}desires", "")
+    profile["player_loves"]         = profile.get(f"{p}loves", [])
+    profile["player_hates"]         = profile.get(f"{p}hates", [])
+
+    profile["other_name"]           = profile.get(f"{o}name", "Sarah")
+    profile["other_gender"]         = profile.get(f"{o}gender", "female")
+    profile["appearance"]           = profile.get(f"{o}appearance", "")
+    profile["hair"]                 = profile.get(f"{o}hair", "")
+    profile["eyes"]                 = profile.get(f"{o}eyes", "")
+    profile["scent"]                = profile.get(f"{o}scent", "")
+    profile["clothing_style"]       = profile.get(f"{o}clothing_style", "")
+    profile["personality"]          = profile.get(f"{o}personality", [])
+    profile["speech_style"]         = profile.get(f"{o}speech_style", "")
+    profile["affection_style"]      = profile.get(f"{o}affection_style", "")
+    profile["key_behaviors"]        = profile.get(f"{o}key_behaviors", [])
+    profile["desires"]              = profile.get(f"{o}desires", "")
+    profile["dealbreakers"]         = profile.get(f"{o}dealbreakers", "")
+    profile["other_loves"]          = profile.get(f"{o}loves", [])
+    profile["other_hates"]          = profile.get(f"{o}hates", [])
 
 
 def print_wrapped(text: str, width: int = 80, prefix: str = "") -> None:
@@ -703,6 +813,10 @@ def run_session(story_file: str, model: str) -> None:
 
     # Analyze
     profile, story_context = analyze_story(story_text, model)
+
+    # CLI default: char_a is player, char_b is NPC
+    _assign_roles(profile, player_key="a")
+
     other_name  = profile.get("other_name", "Sarah")
     player_name = profile.get("player_name", "Alex")
 

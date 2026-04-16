@@ -27,7 +27,7 @@ def _require_auth(f):
     """No-op decorator for compatibility."""
     return f
 
-from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entries, list_models, OLLAMA_URL
+from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entries, list_models, _assign_roles, OLLAMA_URL
 import affinity
 
 STORIES_DIR = Path(__file__).parent / "stories"
@@ -572,60 +572,42 @@ def _character_section(role_label: str, name: str, data: dict, lang: str = "en")
 
 
 def _profile_to_markdown(profile: dict, lang: str = "en") -> str:
-    """Convert an analyzed profile dict to role-labeled character sections."""
+    """Convert an analyzed profile dict to character sections (char_a / char_b format)."""
     L = _MD_LABELS.get(lang, _MD_LABELS["en"])
-    player_name   = profile.get("player_name", "Player")
-    player_gender = profile.get("player_gender", "male").lower()
-    other_name    = profile.get("other_name", "Unknown")
-    other_gender  = profile.get("other_gender", "female").lower()
 
-    player_role = "PRIMARY_MALE"   if player_gender == "male" else "PRIMARY_FEMALE"
-    other_role  = "PRIMARY_MALE"   if other_gender  == "male" else "PRIMARY_FEMALE"
+    sections = []
+    for key in ("a", "b"):
+        name   = profile.get(f"char_{key}_name", f"Character {key.upper()}")
+        gender = profile.get(f"char_{key}_gender", "female").lower()
+        role   = "PRIMARY_MALE" if gender == "male" else "PRIMARY_FEMALE"
+        data = {
+            "appearance":     profile.get(f"char_{key}_appearance"),
+            "hair":           profile.get(f"char_{key}_hair"),
+            "eyes":           profile.get(f"char_{key}_eyes"),
+            "scent":          profile.get(f"char_{key}_scent"),
+            "clothing_style": profile.get(f"char_{key}_clothing_style"),
+            "personality":    profile.get(f"char_{key}_personality", []),
+            "loves":          profile.get(f"char_{key}_loves", []),
+            "hates":          profile.get(f"char_{key}_hates", []),
+            "desires":        profile.get(f"char_{key}_desires"),
+        }
+        section = _character_section(role, name, data, lang=lang)
 
-    # Build player data dict from player_ prefixed fields
-    player_data = {
-        "appearance":     profile.get("player_appearance"),
-        "hair":           profile.get("player_hair"),
-        "eyes":           profile.get("player_eyes"),
-        "scent":          profile.get("player_scent"),
-        "clothing_style": profile.get("player_clothing_style"),
-        "personality":    profile.get("player_personality", []),
-        "loves":          profile.get("player_loves", []),
-        "hates":          profile.get("player_hates", []),
-        "desires":        profile.get("player_desires"),
-    }
+        # Append speech/affection block
+        speech_block = ""
+        if profile.get(f"char_{key}_speech_style"):
+            speech_block += f"\n## {L['speaks']}\n{profile[f'char_{key}_speech_style']}\n"
+        if profile.get(f"char_{key}_affection_style"):
+            speech_block += f"\n## {L['affection']}\n{profile[f'char_{key}_affection_style']}\n"
+        behaviors = profile.get(f"char_{key}_key_behaviors", [])
+        if behaviors:
+            speech_block += f"\n## {L['behaviors']}\n" + "\n".join(f"- {b}" for b in behaviors) + "\n"
+        if profile.get(f"char_{key}_dealbreakers"):
+            speech_block += f"\n## {L['pushes_away']}\n{profile[f'char_{key}_dealbreakers']}\n"
+        if speech_block:
+            section = section.rstrip() + "\n" + speech_block
 
-    # Build other_name data dict from top-level fields
-    other_data = {
-        "appearance":     profile.get("appearance"),
-        "hair":           profile.get("hair"),
-        "eyes":           profile.get("eyes"),
-        "scent":          profile.get("scent"),
-        "clothing_style": profile.get("clothing_style"),
-        "personality":    profile.get("personality", []),
-        "loves":          profile.get("other_loves", []),
-        "hates":          profile.get("other_hates", []),
-        "desires":        profile.get("desires"),
-    }
-
-    sections = [
-        _character_section(player_role, player_name, player_data, lang=lang),
-        _character_section(other_role, other_name, other_data, lang=lang),
-    ]
-
-    # Add a speech/affection block to the NPC section
-    speech_block = ""
-    if profile.get("speech_style"):
-        speech_block += f"\n## {L['speaks']}\n{profile['speech_style']}\n"
-    if profile.get("affection_style"):
-        speech_block += f"\n## {L['affection']}\n{profile['affection_style']}\n"
-    behaviors = profile.get("key_behaviors", [])
-    if behaviors:
-        speech_block += f"\n## {L['behaviors']}\n" + "\n".join(f"- {b}" for b in behaviors) + "\n"
-    if profile.get("dealbreakers"):
-        speech_block += f"\n## {L['pushes_away']}\n{profile['dealbreakers']}\n"
-    if speech_block:
-        sections[1] = sections[1].rstrip() + "\n" + speech_block
+        sections.append(section)
 
     # Secondary characters
     for sc in profile.get("secondary_characters", []):
@@ -646,6 +628,17 @@ def _profile_to_markdown(profile: dict, lang: str = "en") -> str:
         sections.append(_character_section(sc_role, sc_name, sc_data, lang=lang))
 
     return "\n\n---\n\n".join(sections)
+
+
+def _str(val) -> str:
+    """Flatten any LLM-returned value to a plain string (guards against [object Object])."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, dict):
+        return ", ".join(str(v) for v in val.values() if v)
+    if isinstance(val, list):
+        return " · ".join(str(v) for v in val if v)
+    return str(val) if val else ""
 
 
 def _trim_characters(profile: dict) -> dict:
@@ -669,25 +662,9 @@ def _trim_characters(profile: dict) -> dict:
 
 
 def _profile_to_story_markdown(profile: dict, lang: str = "en") -> str:
-    """Build story.md from profile fields using role labels instead of character names."""
+    """Build story.md from profile fields. Uses character names directly in beats/summary."""
     L = _MD_LABELS.get(lang, _MD_LABELS["en"])
-    player_gender = profile.get("player_gender", "male").lower()
-    other_gender  = profile.get("other_gender", "female").lower()
-    player_role   = "PRIMARY_MALE" if player_gender == "male" else "PRIMARY_FEMALE"
-    other_role    = "PRIMARY_MALE" if other_gender  == "male" else "PRIMARY_FEMALE"
-
-    # Replace character names with role labels in the summary text.
-    # The word-boundary \b doesn't work for CJK, so for JA names use plain replace.
     summary = profile.get("story_summary", L["not_provided"])
-    player_name = profile.get("player_name", "")
-    other_name  = profile.get("other_name", "")
-    if lang == "ja":
-        if player_name: summary = summary.replace(player_name, player_role)
-        if other_name:  summary = summary.replace(other_name,  other_role)
-    else:
-        if player_name: summary = re.sub(rf'\b{re.escape(player_name)}\b', player_role, summary)
-        if other_name:  summary = re.sub(rf'\b{re.escape(other_name)}\b',  other_role,  summary)
-
     beats = profile.get("story_beats", [])
     beats_text = "\n".join(f"{i+1}. {b}" for i, b in enumerate(beats)) if beats else L["none_provided"]
     title = "物語" if lang == "ja" else "Story"
@@ -1090,7 +1067,7 @@ def models():
 
 
 def _extract_story_summary(story_md_path: Path) -> str:
-    """Extract the ## Summary section from a _story.md, substituting real names for role labels."""
+    """Extract the ## Summary section from a _story.md file."""
     try:
         text = story_md_path.read_text(encoding="utf-8")
         in_section = False
@@ -1103,28 +1080,7 @@ def _extract_story_summary(story_md_path: Path) -> str:
                 if line.startswith("## "):
                     break
                 lines.append(line)
-        summary = "\n".join(lines).strip()
-
-        # Replace PRIMARY_MALE / PRIMARY_FEMALE with actual character names from profile.json
-        profile_path = story_md_path.parent / story_md_path.name.replace("_story.md", "_profile.json")
-        if profile_path.exists():
-            profile = json.loads(profile_path.read_text(encoding="utf-8"))
-            player_name   = profile.get("player_name", "")
-            player_gender = profile.get("player_gender", "male").lower()
-            other_name    = profile.get("other_name", "")
-            other_gender  = profile.get("other_gender", "female").lower()
-            player_role = "PRIMARY_MALE" if player_gender == "male" else "PRIMARY_FEMALE"
-            other_role  = "PRIMARY_MALE" if other_gender  == "male" else "PRIMARY_FEMALE"
-            # Replace longer/more specific matches first to avoid partial overlaps
-            pairs = sorted(
-                [(player_role, player_name), (other_role, other_name)],
-                key=lambda p: -len(p[0])
-            )
-            for role, name in pairs:
-                if name:
-                    summary = summary.replace(role, name)
-
-        return summary
+        return "\n".join(lines).strip()
     except Exception:
         return ""
 
@@ -1207,21 +1163,18 @@ def analyze():
         profile_file = summaries_dir / f"{story_name}_profile.json"
         profile_file.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        # Generate NPC-POV journal entries keyed to story beats
-        try:
-            journal = generate_journal_entries(profile, story_context, model, lang=analyze_lang)
-        except Exception as e:
-            print(f"[journal generation failed: {e!r}]")
-            journal = []
-        journal_file = summaries_dir / f"{story_name}_journal.json"
-        journal_file.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Journals are generated lazily at game start (after player/NPC roles are known).
 
+        char_a = profile.get("char_a_name", "?")
+        char_b = profile.get("char_b_name", "?")
         return {
             "success": True,
             "story": story_name,
-            "character": profile.get("other_name", "Unknown"),
+            "character": f"{char_a} / {char_b}",
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"error": f"Analysis failed: {str(e)}"}, 500
 
 
@@ -1352,38 +1305,26 @@ def start():
         _MALE_NAMES   = ["Alex", "Daniel", "Ethan", "James", "Liam", "Marcus", "Noah", "Oliver", "Ryan", "Sebastian"]
         _PRONOUN_STOPS = ("you", "her", "she", "him", "he", "they")
 
-    # If the user requested a specific gender, swap player/other roles when needed.
-    preferred_gender = data.get("player_gender", "auto").lower()
-    role_swapped = False
-    if preferred_gender in ("male", "female"):
-        assigned_player_gender = profile.get("player_gender", "male").lower()
-        if assigned_player_gender != preferred_gender:
-            role_swapped = True
-            # Swap all player ↔ other fields so the user plays the right character.
-            # NPC-only fields (speech_style, affection_style, key_behaviors,
-            # dealbreakers) have no player counterpart — they transfer to whoever
-            # ends up as the NPC, which is the best we can do without re-analysis.
-            for pk, ok in [
-                ("player_name",           "other_name"),
-                ("player_gender",         "other_gender"),
-                ("player_appearance",     "appearance"),
-                ("player_hair",           "hair"),
-                ("player_eyes",           "eyes"),
-                ("player_scent",          "scent"),
-                ("player_clothing_style", "clothing_style"),
-                ("player_personality",    "personality"),
-                ("player_desires",        "desires"),
-                ("player_loves",          "other_loves"),
-                ("player_hates",          "other_hates"),
-            ]:
-                profile[pk], profile[ok] = profile.get(ok, ""), profile.get(pk, "")
+    # Detect old-format profiles (pre-char_a/char_b redesign) and reject them.
+    if "char_a_name" not in profile:
+        return {"error": "Story needs re-analysis. Please open the indexer and click Analyze."}, 400
 
-            # story_summary, story_beats, setting etc. describe events in the
-            # original story and must NOT be name-flipped.  The system prompt
-            # already tells the model who "you" are and who the NPC is, so the
-            # model can interpret unchanged beats correctly.  Flipping names here
-            # used to invert story roles (e.g. making the masseuse the client)
-            # because beats describe *what happens*, not who the player is.
+    # Assign player/NPC based on user gender preference — no swapping.
+    # Analysis stores both characters as char_a/char_b (gender-neutral).
+    # We pick which char becomes player here, at game start.
+    preferred_gender = data.get("player_gender", "auto").lower()
+    char_a_gender = profile.get("char_a_gender", "female").lower()
+    char_b_gender = profile.get("char_b_gender", "male").lower()
+
+    if preferred_gender == "female":
+        player_key = "a" if char_a_gender == "female" else "b"
+    elif preferred_gender == "male":
+        player_key = "a" if char_a_gender == "male" else "b"
+    else:
+        # "auto" — char_a is the natural first character
+        player_key = "a"
+
+    _assign_roles(profile, player_key)
 
     other_gender  = profile.get("other_gender", "female").lower()
     player_gender = profile.get("player_gender", "male").lower()
@@ -1489,39 +1430,34 @@ def start():
     session["affinity_history"] = []
 
     # Load journal entries (NPC-POV memory unlocks).
-    # The cached journal is always written for the original NPC.  If a role swap
-    # occurred the NPC changed, so we regenerate the journal for the new NPC and
-    # cache it under a separate filename (keyed by the current other_name) so
-    # both versions can coexist on disk without re-analysis.
+    # Journal is keyed by NPC name so each player_key/other_key combination
+    # gets its own file, and both can coexist on disk.
     _cur_other = profile.get("other_name", "")
     _safe_other = re.sub(r"[^\w]", "_", _cur_other.lower())
-    journal_file = summaries_dir / f"{story_name}_journal.json"
-    journal_file_swapped = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
+    journal_file = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
     try:
-        if role_swapped:
-            if journal_file_swapped.exists():
-                journal = json.loads(journal_file_swapped.read_text(encoding="utf-8"))
-            else:
-                journal = generate_journal_entries(profile, story_context, model, lang=story_lang)
-                try:
-                    journal_file_swapped.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
-                except Exception:
-                    pass
+        if journal_file.exists():
+            journal = json.loads(journal_file.read_text(encoding="utf-8"))
         else:
-            journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
+            journal = generate_journal_entries(profile, story_context, model, lang=story_lang)
+            try:
+                journal_file.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
     except Exception:
         journal = []
     session["journal"] = journal if isinstance(journal, list) else []
     session["journal_unlocked"] = set()
 
     return {
-        "name":        profile["other_name"],
-        "player_name": profile["player_name"],
-        "setting":     profile.get("setting", ""),
-        "stage":       profile.get("relationship_stage", ""),
-        "summary":     profile.get("story_summary", ""),
-        "personality": profile.get("player_personality", []),
-        "affinity":    session["affinity"],
+        "name":         profile["other_name"],
+        "other_gender": profile.get("other_gender", "female"),
+        "player_name":  profile["player_name"],
+        "setting":      _str(profile.get("setting", "")),
+        "stage":        _str(profile.get("relationship_stage", "")),
+        "summary":      _str(profile.get("story_summary", "")),
+        "personality":  profile.get("player_personality", []),
+        "affinity":     session["affinity"],
     }
 
 
@@ -1590,11 +1526,14 @@ def _ollama_stream(messages):
 @app.route("/open", methods=["POST"])
 @_require_auth
 def open_story():
+    _pname = session.get("player_name", "the player")
+    _oname = session.get("other_name", "the NPC")
     trigger_msg = {"role": "user", "content": (
-        "[Begin the story. 3–4 paragraphs maximum. "
-        "Open in medias res — the scene is already in motion. "
-        "Weave in one or two vivid physical details about the NPC naturally as the scene unfolds; do not front-load a description block. "
-        "End on a single unresolved beat: they say one thing or do one thing that demands a response. Stop there.]"
+        f"[Begin the story. 3–4 paragraphs maximum. "
+        f"Remember: the player is {_pname} — always 'you'. {_oname} is the character you portray. "
+        f"Open in medias res — the scene is already in motion. "
+        f"Weave in one or two vivid physical details about {_oname} naturally as the scene unfolds; do not front-load a description block. "
+        f"End on a single unresolved beat: {_oname} says one thing or does one thing that demands a response. Stop there.]"
     )}
     session["messages"].append(trigger_msg)
     return Response(
@@ -1773,14 +1712,19 @@ def resume_session():
     except (json.JSONDecodeError, OSError):
         return {"error": "failed to load profile"}, 500
 
-    # Load journal — prefer swapped variant if one was generated for this NPC.
+    # Re-assign player/NPC roles from the saved player_name so build_system_prompt works.
+    saved_player = save_data.get("player_name", "")
+    if saved_player and saved_player == profile.get("char_b_name", ""):
+        _assign_roles(profile, player_key="b")
+    else:
+        _assign_roles(profile, player_key="a")
+
+    # Load journal keyed by NPC name
     _saved_other = save_data.get("other_name", profile.get("other_name", ""))
     _safe_other  = re.sub(r"[^\w]", "_", _saved_other.lower())
-    journal_file_swapped = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
-    journal_file_default = summaries_dir / f"{story_name}_journal.json"
-    _jf = journal_file_swapped if journal_file_swapped.exists() else journal_file_default
+    journal_file = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
     try:
-        journal = json.loads(_jf.read_text(encoding="utf-8")) if _jf.exists() else []
+        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
     except Exception:
         journal = []
 
@@ -1859,9 +1803,9 @@ def resume_session():
     return {
         "name": profile.get("other_name", ""),
         "player_name": save_data.get("player_name", ""),
-        "setting": profile.get("setting", ""),
-        "stage": profile.get("relationship_stage", ""),
-        "summary": profile.get("story_summary", ""),
+        "setting": _str(profile.get("setting", "")),
+        "stage": _str(profile.get("relationship_stage", "")),
+        "summary": _str(profile.get("story_summary", "")),
         "personality": profile.get("player_personality", []),
         "affinity": session.get("affinity"),
         "resumed": True,

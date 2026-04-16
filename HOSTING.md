@@ -40,6 +40,9 @@ launchctl unload ~/Library/LaunchAgents/xyz.otherdoor.tunnel.plist
 # Restart the tunnel
 launchctl kickstart -k gui/$(id -u)/xyz.otherdoor.tunnel
 
+# Restart the server
+launchctl kickstart -k gui/$(id -u)/xyz.otherdoor.server
+
 # Check status
 launchctl list | grep otherdoor
 

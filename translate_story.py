@@ -22,23 +22,31 @@ from pathlib import Path
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL = "qwen-ja"
-CHUNK_TARGET = 2500     # chars — soft target, won't split mid-paragraph
+CHUNK_TARGET = 1500     # chars — soft target, won't split mid-paragraph
 NUM_CTX = 8192          # bump from Ollama's default 2048
 TIMEOUT_SECONDS = 600
 
 
 def ollama_chat(model: str, messages: list, num_ctx: int = NUM_CTX) -> str:
+    """Stream the response so the timeout applies per-token, not to the full reply."""
     payload = json.dumps({
         "model": model,
         "messages": messages,
-        "stream": False,
+        "stream": True,
         "options": {"num_ctx": num_ctx, "temperature": 0.3},
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload,
                                  headers={"Content-Type": "application/json"})
+    parts = []
     with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-        data = json.loads(resp.read())
-    return data["message"]["content"]
+        for line in resp:
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            parts.append(chunk.get("message", {}).get("content", ""))
+            if chunk.get("done"):
+                break
+    return "".join(parts)
 
 
 def chunk_paragraphs(text: str, target: int = CHUNK_TARGET) -> list[str]:

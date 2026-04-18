@@ -1027,7 +1027,7 @@ session = {
     "affinity":       None,
     "affinity_history": [],
     "suggest_count":  0,
-    "suggest_next_setting": 3,
+    "suggest_next_env": 3,
 }
 
 _affinity_lock = threading.Lock()
@@ -1450,7 +1450,7 @@ def start():
     session["affinity"]       = affinity.initial_affinity(profile)
     session["affinity_history"] = []
     session["suggest_count"]  = 0
-    session["suggest_next_setting"] = 3
+    session["suggest_next_env"] = random.randint(2, 5)
 
     # Journal entries are generated dynamically as beats fire, based on the
     # actual conversation. No pre-generation needed.
@@ -1756,6 +1756,8 @@ def resume_session():
     session["beat_next_turn"] = random.randint(5, 8)
     session["affinity"] = affinity.initial_affinity(profile)
     session["affinity_history"] = []
+    session["suggest_count"]  = 0
+    session["suggest_next_env"] = random.randint(2, 5)
     session["journal"] = journal if isinstance(journal, list) else []
     session["journal_unlocked"] = set(save_data.get("journal_unlocked", []))
 
@@ -1804,8 +1806,6 @@ def resume_session():
     )
     session["log_file"] = _log_path
     session["story_context"]  = story_context
-    session["suggest_count"] = 0
-    session["suggest_next_setting"] = 3
 
     return {
         "name": profile.get("other_name", ""),
@@ -1832,16 +1832,15 @@ def suggest():
     # which causes it to ignore JSON instructions after a few turns.
     is_ja = session.get("lang", "en") == "ja"
 
-    # Decide whether this turn should include a setting-based suggestion.
-    # Every 3rd or 4th call (alternating), one suggestion is about the environment.
+    # Decide whether this turn gets an environment suggestion (once every 2–5 rounds).
     session["suggest_count"] = session.get("suggest_count", 0) + 1
     count = session["suggest_count"]
-    next_setting = session.get("suggest_next_setting", 3)
-    include_setting = (count >= next_setting)
-    if include_setting:
-        session["suggest_next_setting"] = count + random.choice([3, 4])
+    next_env = session.get("suggest_next_env", 3)
+    include_env = (count >= next_env)
+    if include_env:
+        session["suggest_next_env"] = count + random.randint(2, 5)
 
-    # Pull the story setting for concrete context on setting turns.
+    # Pull the story setting for concrete environmental context.
     profile = session.get("profile") or {}
     setting_raw = profile.get("setting", "")
     if isinstance(setting_raw, dict):
@@ -1852,56 +1851,48 @@ def suggest():
         setting_str = str(setting_raw).strip()
 
     if is_ja:
+        n = 3 if include_env else 2
         suggest_system = (
             "あなたは創作アシスタントです。プレイヤーの行動候補を提案するのが唯一の役割です。"
-            "必ず有効なJSON配列（3つの日本語文字列）のみを返してください。"
+            f"必ず有効なJSON配列（{n}つの日本語文字列）のみを返してください。"
             "前置きやマークダウン、中国語、英語は一切混ぜないこと。"
         )
-        if include_setting:
-            setting_hint = f"舞台：{setting_str}\n" if setting_str else ""
-            suggest_prompt = (
-                f"{setting_hint}"
-                "JSON配列で3つの行動候補を返してください。順番どおりに:\n"
-                "[0] 相手に対する大胆・直接的な行動または台詞（1〜2文）\n"
-                "[1] 相手に対する優しく温かい行動または台詞（1〜2文）\n"
-                f"[2] 舞台・情景・環境に関わる行動（相手との関係ではなく）（1〜2文）"
-                f"{'　例：「' + setting_str[:30] + 'を散歩しようと誘う」' if setting_str else '　例：「窓の外の景色を眺める」'}\n"
-                "プレイヤー（「私」または主語省略）の視点で書くこと。必ず日本語のみ。"
-                "JSON配列のみを返すこと。コードフェンスや説明文は一切含めない。"
-            )
-        else:
-            suggest_prompt = (
-                "このシーンで、プレイヤーが次に取り得る行動・台詞を3つ、自然な日本語で提案してください。"
-                "それぞれ1〜2文。プレイヤー（「私」または主語省略）の視点で書くこと。"
-                "トーンを変えること：1つは大胆・直接的、1つは優しく温かい、1つは慎重・控えめ。"
-                "必ず日本語（中国語や英語を混ぜない）。"
-                "JSON配列のみを返すこと。コードフェンスや説明文は一切含めない。\n"
-                '例：["彼女の手を取る。", "「教えて」と静かに言う。", "視線を逸らし、言葉を探す。"]'
-            )
+        setting_hint = f"舞台：{setting_str}\n" if setting_str else ""
+        env_item = (
+            "[2] 環境・場所に関わる行動（相手との関係ではなく）。"
+            "現在のシーンの場所から自然につながる提案にすること（現在いる場所と無関係な観光地や有名スポットを突然出さない）。"
+            "場所の移動を提案する場合は「〜に行きたい」「〜を見たい」の形にすること。（1〜2文）\n"
+        ) if include_env else ""
+        suggest_prompt = (
+            f"{setting_hint}"
+            f"JSON配列で{n}つの行動候補を返してください。順番どおりに:\n"
+            "[0] 相手に対する大胆・直接的な行動または台詞（1〜2文）\n"
+            "[1] 相手に対する優しく温かい行動または台詞（1〜2文）\n"
+            f"{env_item}"
+            "プレイヤー（「私」または主語省略）の視点で書くこと。必ず日本語のみ。"
+            "JSON配列のみを返すこと。コードフェンスや説明文は一切含めない。"
+        )
     else:
+        n = 3 if include_env else 2
         suggest_system = (
             "You are a creative writing assistant. Your only job is to suggest player actions. "
-            "You must respond with ONLY a valid JSON array of exactly 3 strings. No prose, no markdown."
+            f"You must respond with ONLY a valid JSON array of exactly {n} strings. No prose, no markdown."
         )
-        if include_setting:
-            setting_hint = f"Story setting: {setting_str}\n" if setting_str else ""
-            suggest_prompt = (
-                f"{setting_hint}"
-                "Return a JSON array of exactly 3 player actions, in this order:\n"
-                "[0] A bold or direct action toward the other character (1-2 sentences, first person)\n"
-                "[1] A tender or warm action toward the other character (1-2 sentences, first person)\n"
-                f"[2] An action that engages with the setting or environment — NOT about the relationship "
-                f"(1-2 sentences, first person){', specific to: ' + setting_str if setting_str else ''}\n"
-                "Return ONLY a JSON array of 3 strings. No prose, no markdown fences, no commentary."
-            )
-        else:
-            suggest_prompt = (
-                "Suggest exactly 3 brief actions or responses the player could take next in this scene. "
-                "Each must be 1–2 sentences, written in first person as something the player does or says. "
-                "Vary the tone: one bold/direct, one tender/warm, one cautious/indirect. "
-                "Return ONLY a JSON array of 3 strings — no prose, no markdown fences, no commentary. "
-                'Example: ["I reach for her hand.", "\\"Tell me,\\" I say softly.", "I look away, unsure."]'
-            )
+        setting_hint = f"Story setting: {setting_str}\n" if setting_str else ""
+        env_item = (
+            "[2] An action about the environment or a nearby place — NOT about the relationship. "
+            "It must follow naturally from where the characters currently are; do NOT invent unrelated famous landmarks or distant locations. "
+            "If suggesting going somewhere, phrase it as 'I want to go to...' or 'I want to see...' "
+            f"(1-2 sentences, first person){', grounded in: ' + setting_str if setting_str else ''}\n"
+        ) if include_env else ""
+        suggest_prompt = (
+            f"{setting_hint}"
+            f"Return a JSON array of exactly {n} player actions, in this order:\n"
+            "[0] A bold or direct action toward the other character (1-2 sentences, first person)\n"
+            "[1] A tender or warm action toward the other character (1-2 sentences, first person)\n"
+            f"{env_item}"
+            f"Return ONLY a JSON array of {n} strings. No prose, no markdown fences, no commentary."
+        )
     recent = [m for m in session["messages"] if m["role"] != "system"]
     context = recent[-6:]
     messages = [{"role": "system", "content": suggest_system}] + context + [{"role": "user", "content": suggest_prompt}]

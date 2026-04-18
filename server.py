@@ -1426,6 +1426,7 @@ def start():
     session["secondary_characters"] = secondary_characters
     session["story_beats"]    = profile.get("story_beats", [])
     session["beat_index"]     = 0
+    session["beat_next_turn"] = random.randint(5, 8)
     session["lang"]           = story_lang
     session["story_name"]     = story_name
     session["affinity"]       = affinity.initial_affinity(profile)
@@ -1753,6 +1754,7 @@ def resume_session():
     session["secondary_characters"] = profile.get("secondary_characters", {})
     session["story_beats"] = profile.get("story_beats", [])
     session["beat_index"] = save_data.get("beat_index", 0)
+    session["beat_next_turn"] = random.randint(5, 8)
     session["affinity"] = affinity.initial_affinity(profile)
     session["affinity_history"] = []
     session["journal"] = journal if isinstance(journal, list) else []
@@ -1977,10 +1979,11 @@ def chat():
     if beats:
         turn_count = sum(1 for m in session["messages"] if m["role"] == "user")
         beat_idx = session["beat_index"]
-        if turn_count % 3 == 0 and beat_idx < len(beats):
+        if turn_count >= session.get("beat_next_turn", 5) and beat_idx < len(beats):
             beat = beats[beat_idx]
             beat_just_fired = beat_idx
             session["beat_index"] += 1
+            session["beat_next_turn"] = turn_count + random.randint(5, 8)
             nudge = (
                 f"\n\n[Scene director: You have not yet brought this beat into the action — "
                 f"introduce it naturally within this exchange or the next. "
@@ -1992,10 +1995,11 @@ def chat():
 
     newly_unlocked = _unlock_journal_for_beat(beat_just_fired) if beat_just_fired is not None else []
 
+    npc_name = session.get("other_name", "")
     def wrapped():
-        for entry in newly_unlocked:
-            yield f"data: {json.dumps({'journal_unlock': {'id': entry['id'], 'title': entry['title'], 'kind': entry['kind']}})}\n\n"
         yield from _ollama_stream(messages_for_llm)
+        for entry in newly_unlocked:
+            yield f"data: {json.dumps({'journal_unlock': {'id': entry['id'], 'title': entry['title'], 'npc_name': npc_name}})}\n\n"
 
     return Response(
         stream_with_context(wrapped()),
@@ -2105,14 +2109,12 @@ def journal_list():
                 "id": e["id"],
                 "title": e["title"],
                 "body": e["body"],
-                "kind": e.get("kind", "memory"),
                 "unlocked": True,
             })
         else:
             items.append({
                 "id": e["id"],
                 "title": "???",
-                "kind": e.get("kind", "memory"),
                 "unlocked": False,
             })
     return {"entries": items, "unlocked_count": len(unlocked), "total": len(journal)}

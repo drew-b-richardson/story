@@ -444,13 +444,7 @@
     color: var(--accent2);
     margin-bottom: 0.3rem;
   }
-  .journal-entry .je-kind {
-    font-size: 0.7rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    margin-bottom: 0.4rem;
-  }
+
   .journal-entry .je-body {
     display: none;
     font-size: 0.9rem;
@@ -490,6 +484,42 @@
   @keyframes toast-in {
     from { opacity: 0; transform: translate(-50%, 20px); }
     to { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  #loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 300;
+  }
+  #loading-overlay .loading-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2.5rem 3rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+  #loading-overlay .loading-spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  #loading-overlay .loading-msg {
+    color: var(--accent2);
+    font-size: 1rem;
+    letter-spacing: 0.04em;
   }
 
   /* ── Affinity dot (live indicator) ── */
@@ -842,6 +872,13 @@
 
   <div id="journal-toast" class="journal-toast" style="display:none;"></div>
 
+  <div id="loading-overlay" style="display:none;">
+    <div class="loading-box">
+      <div class="loading-spinner"></div>
+      <div class="loading-msg" id="loading-msg">Preparing your story…</div>
+    </div>
+  </div>
+
   <div id="prior-banner"></div>
 
   <div id="messages"></div>
@@ -1107,7 +1144,7 @@ async function startStory(story) {
 
   // Disable all story cards while loading
   $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = true);
-  setStatus('Preparing your story…');
+  showLoadingOverlay('Preparing your story…');
 
   try {
     const res = await fetch('/start', {
@@ -1118,6 +1155,7 @@ async function startStory(story) {
 
     const data = await res.json();
     if (data.error) {
+      hideLoadingOverlay();
       setStatus('Error: ' + data.error);
       $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = false);
       return;
@@ -1135,6 +1173,7 @@ async function startStory(story) {
     updateAffinityDot(currentAffinity);
 
     $('messages').innerHTML = '';
+    hideLoadingOverlay();
     setStatus('');
     $('setup-screen').style.display = 'none';
     $('chat-screen').style.display = 'flex';
@@ -1142,6 +1181,7 @@ async function startStory(story) {
     await streamResponse('/open', null);
 
   } catch (err) {
+    hideLoadingOverlay();
     setStatus('Error: ' + err.message);
     $('story-list').querySelectorAll('.story-card').forEach(c => c.disabled = false);
   }
@@ -1560,6 +1600,15 @@ function setStatus(msg) {
   $('setup-status').textContent = msg;
 }
 
+function showLoadingOverlay(msg) {
+  $('loading-msg').textContent = msg || 'Preparing your story…';
+  $('loading-overlay').style.display = 'flex';
+}
+
+function hideLoadingOverlay() {
+  $('loading-overlay').style.display = 'none';
+}
+
 // ── Mute toggle ──────────────────────────────────────
 $('btn-mute').addEventListener('click', () => {
   muted = !muted;
@@ -1622,7 +1671,8 @@ function handleJournalUnlock(entry) {
   badge.textContent = journalNewCount;
   badge.style.display = 'inline-block';
   $('btn-journal').classList.add('has-new');
-  showJournalToast(`New ${entry.kind}: ${entry.title}`);
+  const npcName = entry.npc_name || charName || 'the NPC';
+  showJournalToast(`You've unlocked one of ${npcName}'s journal entries!`);
 }
 
 function showJournalToast(text) {
@@ -1668,10 +1718,6 @@ function renderJournal(entries) {
     const title = document.createElement('div');
     title.className = 'je-title';
     title.textContent = e.unlocked ? e.title : '— locked —';
-    const kind = document.createElement('div');
-    kind.className = 'je-kind';
-    kind.textContent = e.kind || 'memory';
-    div.appendChild(kind);
     div.appendChild(title);
     if (e.unlocked) {
       const body = document.createElement('div');

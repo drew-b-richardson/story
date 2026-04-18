@@ -481,7 +481,6 @@ def generate_journal_entries(profile: dict, story_context: str, model: str, lang
             "- title: 短い詩的なタイトル（日本語）\n"
             "- body: 一人称の短い文章（120〜220字、自然な日本語）\n"
             "- unlock_beat: 対応するビート番号（整数）\n"
-            "- kind: \"memory\" / \"letter\" / \"dream\" のいずれか\n"
         )
     else:
         prompt = (
@@ -501,7 +500,6 @@ def generate_journal_entries(profile: dict, story_context: str, model: str, lang
             "- body: 80-150 words of first-person prose, no attribution tags, "
             "no dialogue quotes — pure interior voice\n"
             "- unlock_beat: integer, the beat index this entry is keyed to\n"
-            "- kind: one of \"memory\", \"letter\", \"dream\"\n"
         )
 
     raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False, timeout=600)
@@ -527,15 +525,11 @@ def generate_journal_entries(profile: dict, story_context: str, model: str, lang
         except (TypeError, ValueError):
             unlock_beat = i
         unlock_beat = max(0, min(unlock_beat, len(beats) - 1))
-        kind = str(item.get("kind", "memory")).strip().lower()
-        if kind not in ("memory", "letter", "dream"):
-            kind = "memory"
         entries.append({
             "id": f"j{i}",
             "title": title,
             "body": body,
             "unlock_beat": unlock_beat,
-            "kind": kind,
         })
     return entries
 

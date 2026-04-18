@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Story Roleplay</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -136,12 +136,13 @@
     border: 1px solid var(--border);
     color: var(--muted);
     font-size: 0.85rem;
-    padding: 0.4rem 0.8rem;
+    padding: 0.65rem 1rem;
     border-radius: 8px;
     cursor: pointer;
     font-family: inherit;
     transition: border-color 0.15s, color 0.15s;
     flex-shrink: 0;
+    min-height: 44px;
   }
   .btn-back:hover { border-color: var(--accent); color: var(--accent2); }
 
@@ -202,12 +203,12 @@
     border-radius: 8px;
     color: var(--text);
     font-family: inherit;
-    font-size: 0.95rem;
-    padding: 0.6rem 0.8rem;
+    font-size: 1rem;
+    padding: 0.65rem 0.8rem;
     outline: none;
     transition: border-color 0.2s;
     resize: vertical;
-    min-height: 42px;
+    min-height: 44px;
     line-height: 1.6;
   }
 
@@ -313,7 +314,7 @@
     flex-shrink: 0;
   }
 
-  #char-info { flex: 1; min-width: 200px; }
+  #char-info { flex: 1; min-width: 0; }
   #char-name { font-size: 1.05rem; color: var(--accent2); }
   #char-meta { font-size: 0.78rem; color: var(--muted); font-style: italic; margin-top: 0.1rem; }
   #char-meta-expand { background: none; border: none; color: var(--accent); font-size: 0.75rem; font-style: italic; cursor: pointer; padding: 0; margin-left: 0.3em; }
@@ -341,7 +342,8 @@
     border: 1px solid var(--border);
     color: var(--muted);
     font-size: 0.8rem;
-    padding: 0.4rem 0.8rem;
+    padding: 0.55rem 0.9rem;
+    min-height: 44px;
   }
 
   #btn-new-story:hover { border-color: var(--accent); color: var(--accent2); }
@@ -350,10 +352,12 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--muted);
-    font-size: 0.8rem;
-    padding: 0.4rem 0.7rem;
+    font-size: 0.9rem;
+    padding: 0.55rem 0.75rem;
     border-radius: 8px;
     line-height: 1;
+    min-width: 44px;
+    min-height: 44px;
   }
   #btn-mute:hover { border-color: var(--accent); color: var(--accent2); }
   #btn-mute.muted { color: var(--border); border-color: var(--border); }
@@ -364,9 +368,11 @@
     border: 1px solid var(--border);
     color: var(--muted);
     font-size: 0.9rem;
-    padding: 0.4rem 0.7rem;
+    padding: 0.55rem 0.75rem;
     border-radius: 8px;
     line-height: 1;
+    min-width: 44px;
+    min-height: 44px;
   }
   #btn-journal:hover { border-color: var(--accent); color: var(--accent2); }
   #btn-journal.has-new { color: var(--accent2); border-color: var(--accent); }
@@ -421,7 +427,12 @@
     font-size: 1.5rem;
     cursor: pointer;
     line-height: 1;
-    padding: 0 0.3rem;
+    padding: 0.4rem 0.6rem;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .journal-close:hover { color: var(--accent2); }
   .journal-list { overflow-y: auto; padding: 0.6rem; }
@@ -460,10 +471,13 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--muted);
-    font-size: 0.8rem;
-    padding: 0.3rem 0.7rem;
+    font-size: 0.85rem;
+    padding: 0.6rem 0.9rem;
     border-radius: 6px;
     cursor: pointer;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
   .je-play:hover { border-color: var(--accent); color: var(--accent2); }
 
@@ -501,6 +515,7 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 2.5rem 3rem;
+    max-width: calc(100vw - 2rem);
     text-align: center;
     display: flex;
     flex-direction: column;
@@ -601,15 +616,16 @@
     color: var(--muted);
     min-height: 1.4em;
   }
-  #recap-actions { display: flex; gap: 0.6rem; justify-content: flex-end; }
+  #recap-actions { display: flex; gap: 0.6rem; justify-content: flex-end; flex-wrap: wrap; }
   #recap-actions button {
-    padding: 0.5rem 0.95rem;
+    padding: 0.65rem 1rem;
     font-size: 0.85rem;
     border-radius: 8px;
     border: 1px solid var(--border);
     background: transparent;
     color: var(--muted);
     cursor: pointer;
+    min-height: 44px;
   }
   #recap-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   #recap-actions button:hover { border-color: var(--accent); color: var(--accent2); }
@@ -725,6 +741,8 @@
     display: none;
     flex-wrap: wrap;
     gap: 0.5rem;
+    max-height: 30vh;
+    overflow-y: auto;
   }
 
   .suggestion-chip {
@@ -734,11 +752,14 @@
     color: var(--accent2);
     font-family: inherit;
     font-size: 0.85rem;
-    padding: 0.35rem 0.85rem;
+    padding: 0.6rem 1rem;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
     text-align: left;
     line-height: 1.4;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
   }
 
   .suggestion-chip:hover {
@@ -761,7 +782,8 @@
   #input-area {
     background: var(--surface);
     border-top: 1px solid var(--border);
-    padding: 0.5rem 1rem;
+    padding: 0.6rem 1rem;
+    padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
     display: flex;
     gap: 0.6rem;
     align-items: flex-end;
@@ -774,14 +796,16 @@
     border-radius: 12px;
     color: var(--text);
     font-family: inherit;
-    font-size: 0.97rem;
-    padding: 0.5rem 0.9rem;
+    font-size: 1rem;
+    padding: 0.65rem 0.9rem;
     outline: none;
     resize: none;
-    max-height: 80px;
+    max-height: 120px;
     line-height: 1.5;
     transition: border-color 0.2s;
     overflow-y: auto;
+    /* Prevent iOS from zooming in on focus (requires font-size >= 16px) */
+    -webkit-text-size-adjust: 100%;
   }
 
   #user-input:focus { border-color: var(--accent); }
@@ -791,7 +815,7 @@
     background: var(--accent);
     color: #fff;
     border-radius: 12px;
-    width: 42px; height: 42px;
+    width: 44px; height: 44px;
     padding: 0;
     display: flex;
     align-items: center;
@@ -801,7 +825,53 @@
 
   #btn-send:hover:not(:disabled) { opacity: 0.85; }
 
-  #btn-send svg { width: 18px; height: 18px; }
+  #btn-send svg { width: 20px; height: 20px; }
+
+  /* ── Mobile overrides (≤ 480px) ── */
+  @media (max-width: 480px) {
+    /* Setup screen heading */
+    .setup-step h1 { font-size: 1.5rem; }
+
+    /* Gender buttons — fill row on very small screens */
+    .gender-buttons { gap: 0.75rem; }
+    .gender-btn { padding: 1.2rem 1.2rem; min-width: 90px; }
+
+    /* Chat header — tighter on small screens */
+    #chat-header { padding: 0.6rem 0.75rem; }
+    #char-name { font-size: 0.95rem; }
+    #char-meta { font-size: 0.72rem; }
+
+    /* Messages — wider bubbles on narrow screens */
+    .msg { max-width: 90%; }
+    .bubble { font-size: 0.95rem; }
+
+    /* Input area */
+    #input-area { padding: 0.5rem 0.75rem; padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px)); }
+
+    /* Suggestion chips — slightly smaller text but keep min-height */
+    .suggestion-chip { font-size: 0.82rem; padding: 0.5rem 0.85rem; }
+
+    /* Save delete button needs explicit height so it doesn't collapse */
+    .save-delete-btn { min-height: 44px !important; min-width: 44px !important; }
+
+    /* Loading box narrower padding */
+    #loading-overlay .loading-box { padding: 2rem 1.5rem; }
+
+    /* Recap card edge padding */
+    #recap-card { padding: 1.1rem 1rem; }
+    #recap-actions { justify-content: stretch; }
+    #recap-actions button { flex: 1; justify-content: center; }
+
+    /* Journal dialog fills more of screen */
+    .journal-dialog { max-height: 92vh; }
+  }
+
+  /* Prevent iOS rubber-band scroll from revealing bg behind input bar */
+  @supports (padding-bottom: env(safe-area-inset-bottom)) {
+    #chat-screen {
+      padding-bottom: 0;
+    }
+  }
 
 </style>
 </head>
@@ -862,8 +932,8 @@
     <div id="chat-header-icons">
       <div id="tts-indicator" title="Speaking…"></div>
       <span id="affinity-dot" title="" aria-label="Affinity">♥&#xFE0E;</span>
-      <button id="btn-save" title="Save progress" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">💾</button>
-      <button id="btn-view-recap" title="View relationship recap" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">📊</button>
+      <button id="btn-save" title="Save progress" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; padding: 0.55rem 0.75rem; border-radius: 8px; cursor: pointer; line-height: 1; min-width: 44px; min-height: 44px;">💾</button>
+      <button id="btn-view-recap" title="View relationship recap" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; padding: 0.55rem 0.75rem; border-radius: 8px; cursor: pointer; line-height: 1; min-width: 44px; min-height: 44px;">📊</button>
       <button id="btn-mute" title="Toggle voice">🔊</button>
       <button id="btn-journal" title="Journal">
         <span class="journal-icon">✦</span>
@@ -1065,9 +1135,13 @@ function renderSavesList() {
     deleteBtn.style.border = '1px solid var(--border)';
     deleteBtn.style.borderRadius = 'var(--radius)';
     deleteBtn.style.color = 'var(--muted)';
-    deleteBtn.style.width = '2.5rem';
+    deleteBtn.style.minWidth = '44px';
+    deleteBtn.style.minHeight = '44px';
     deleteBtn.style.cursor = 'pointer';
     deleteBtn.style.fontSize = '0.9rem';
+    deleteBtn.style.display = 'flex';
+    deleteBtn.style.alignItems = 'center';
+    deleteBtn.style.justifyContent = 'center';
     deleteBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm(`Delete save "${storyTitle}"?`)) {
@@ -1338,7 +1412,7 @@ $('user-input').addEventListener('keydown', e => {
 // Auto-resize textarea; hide suggestions when user starts typing their own text
 $('user-input').addEventListener('input', function() {
   this.style.height = 'auto';
-  this.style.height = Math.min(this.scrollHeight, 80) + 'px';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
   if (this.value.trim()) clearSuggestions();
 });
 
@@ -1392,7 +1466,7 @@ async function loadSuggestions() {
         const input = $('user-input');
         input.value = text;
         input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 80) + 'px';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
         sendMessage();
       });
       el.appendChild(btn);

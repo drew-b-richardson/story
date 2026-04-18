@@ -954,6 +954,7 @@
   </div>
 
   <div id="journal-toast" class="journal-toast" style="display:none;"></div>
+  <div id="affinity-toast" class="journal-toast" style="display:none; bottom: 5rem;"></div>
 
   <div id="loading-overlay" style="display:none;">
     <div class="loading-box">
@@ -1052,6 +1053,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let currentAffinity = null;
 let currentAffinityHistory = [];
+let prevAffinityLevels = null;
 
 let charName = 'Her';
 let npcGender = 'female';
@@ -1273,6 +1275,7 @@ async function startStory(story) {
 
     currentAffinity = data.affinity || null;
     currentAffinityHistory = [];
+    prevAffinityLevels = currentAffinity ? _affinityLevelsFor(currentAffinity) : null;
     updateAffinityDot(currentAffinity);
 
     $('messages').innerHTML = '';
@@ -1314,6 +1317,7 @@ async function resumeSession(saveId) {
 
     currentAffinity = data.affinity || null;
     currentAffinityHistory = [];
+    prevAffinityLevels = currentAffinity ? _affinityLevelsFor(currentAffinity) : null;
     updateAffinityDot(currentAffinity);
 
     // Show the session summary as a recap
@@ -1518,6 +1522,7 @@ async function streamResponse(url, body) {
           if (data.error) { console.error(data.error); break; }
           if (data.journal_unlock) { handleJournalUnlock(data.journal_unlock); continue; }
           if (data.done && data.affinity) {
+            checkAffinityLevelChanges(data.affinity);
             currentAffinity = data.affinity;
             updateAffinityDot(currentAffinity);
           }
@@ -1594,6 +1599,66 @@ function updateAffinityDot(a) {
     el.style.animationPlayState = 'running';
   }
   el.title = a.last_reason || '';
+}
+
+function _affinityLevel(val) {
+  if (val <= 3) return 'low';
+  if (val <= 6) return 'medium';
+  return 'high';
+}
+
+function _affinityLevelsFor(a) {
+  return { trust: _affinityLevel(a.trust), intimacy: _affinityLevel(a.intimacy), tension: _affinityLevel(a.tension) };
+}
+
+const _affinityToastQueue = [];
+let _affinityToastTimer = null;
+
+function _drainAffinityToastQueue() {
+  if (!_affinityToastQueue.length) { _affinityToastTimer = null; return; }
+  const toast = $('affinity-toast');
+  toast.textContent = _affinityToastQueue.shift();
+  toast.style.display = 'block';
+  clearTimeout(_affinityToastTimer);
+  _affinityToastTimer = setTimeout(() => {
+    toast.style.display = 'none';
+    _drainAffinityToastQueue();
+  }, 2200);
+}
+
+function _queueAffinityToast(msg) {
+  _affinityToastQueue.push(msg);
+  if (!_affinityToastTimer) _drainAffinityToastQueue();
+}
+
+const _affinityMessages = {
+  trust: {
+    up: { medium: 'Trust is growing', high: 'Trust has fully deepened' },
+    down: { medium: 'Trust is wavering', low: 'Trust is crumbling' },
+  },
+  intimacy: {
+    up: { medium: 'Intimacy is growing', high: 'A deep bond has formed' },
+    down: { medium: 'Intimacy is fading', low: 'The bond has cooled' },
+  },
+  tension: {
+    up: { medium: 'Tension is building', high: 'Tension is at a breaking point' },
+    down: { medium: 'Tension is easing', low: 'The tension has dissolved' },
+  },
+};
+
+function checkAffinityLevelChanges(newAffinity) {
+  if (!newAffinity) return;
+  const newLevels = _affinityLevelsFor(newAffinity);
+  if (!prevAffinityLevels) { prevAffinityLevels = newLevels; return; }
+  const order = { low: 0, medium: 1, high: 2 };
+  for (const dim of ['trust', 'intimacy', 'tension']) {
+    const oldL = prevAffinityLevels[dim], newL = newLevels[dim];
+    if (oldL === newL) continue;
+    const rising = order[newL] > order[oldL];
+    const msgs = _affinityMessages[dim][rising ? 'up' : 'down'];
+    if (msgs[newL]) _queueAffinityToast(msgs[newL]);
+  }
+  prevAffinityLevels = newLevels;
 }
 
 function renderPriorBanner(prior) {

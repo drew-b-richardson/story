@@ -444,94 +444,70 @@ def enrich_character_profile(profile: dict, story_context: str, model: str, lang
     return profile
 
 
-def generate_journal_entries(profile: dict, story_context: str, model: str, lang: str = "en") -> list:
-    """Generate a pool of NPC-POV journal entries tied to the story beats.
+def generate_journal_entry(profile: dict, recent_messages: list, beat_idx: int,
+                           model: str, lang: str = "en") -> dict | None:
+    """Generate a single NPC-POV journal entry based on the actual recent conversation.
 
-    Each entry: {id, title, body, unlock_beat, kind}. One per beat plus up to
-    two bonus entries. Used by the Memory Unlocks feature to surface backstory
-    collectibles as gameplay progresses.
+    Called after a story beat fires so the entry reflects what genuinely happened
+    in this playthrough rather than what was planned.
+    Returns {id, title, body} or None on failure.
     """
     other_name = profile.get("other_name", "the NPC")
     other_gender = profile.get("other_gender", "female").lower()
     personality = ", ".join(profile.get("personality", []))
     desires = profile.get("desires", "")
     speech = profile.get("speech_style", "")
-    beats = profile.get("story_beats", []) or []
-    summary = profile.get("story_summary", "")
-    ctx = story_context[:2500]
 
-    if not beats:
-        return []
+    # Last 8 messages give enough context without overwhelming the prompt
+    snippet = recent_messages[-8:]
+    convo = "\n".join(
+        f"{'PLAYER' if m['role'] == 'user' else other_name.upper()}: {m['content'][:400]}"
+        for m in snippet if m["role"] in ("user", "assistant")
+    )
 
-    ja = (lang == "ja")
-    beat_list = "\n".join(f"{i}. {b}" for i, b in enumerate(beats))
-
-    if ja:
+    if lang == "ja":
         prompt = (
             "【重要】出力は必ず自然な日本語のみ。中国語・英語を混ぜないこと。\n\n"
-            f"物語の文脈：{ctx}\n\n"
-            f"主要キャラクター「{other_name}」（{other_gender}）の一人称視点で、"
-            "日記・手紙・回想などの「ジャーナル断片」を作成してください。"
-            "これらはプレイヤーが物語の節目ごとに解禁する収集要素です。\n\n"
+            f"以下は物語の最近のシーンです：\n\n{convo}\n\n"
+            f"キャラクター「{other_name}」（{other_gender}）として、"
+            "このシーンの後に書いた日記の断片を一つ作成してください。"
+            "心の内を正直に、声に出して言えないことを書くように。\n\n"
             f"{other_name}の性格：{personality}\n"
-            f"望み：{desires}\n"
+            f"望み・恐れ：{desires}\n"
             f"話し方：{speech}\n\n"
-            f"以下の各ビートに対応する断片を1つずつ作ってください：\n{beat_list}\n\n"
-            "JSON配列のみを返してください。各要素のフィールド：\n"
-            "- title: 短い詩的なタイトル（日本語）\n"
-            "- body: 一人称の短い文章（120〜220字、自然な日本語）\n"
-            "- unlock_beat: 対応するビート番号（整数）\n"
+            "JSONオブジェクトのみを返してください：\n"
+            "- title: 短い詩的なタイトル（日本語、8語以内）\n"
+            "- body: 一人称の文章（120〜200字、自然な日本語、台詞引用なし）\n"
         )
     else:
         prompt = (
-            f"Story context: {ctx}\n\n"
-            f"Write a set of first-person journal snippets from {other_name}'s POV "
-            f"({other_gender}). These are collectible memory fragments — private letters, "
-            "diary entries, or fleeting memories — that a player unlocks as the story "
-            "progresses. Each must sound like an intimate, unguarded moment the NPC "
-            "would never say aloud.\n\n"
+            f"Here is a recent scene from a story:\n\n{convo}\n\n"
+            f"Write a short journal entry from {other_name}'s first-person perspective "
+            f"({other_gender}) about this moment — their private thoughts about what just "
+            "happened, something they would never say aloud. "
+            "Do NOT invent events that didn't occur in the scene above.\n\n"
             f"{other_name}'s personality: {personality}\n"
             f"What they want/fear: {desires}\n"
-            f"Voice: {speech}\n"
-            f"Story summary: {summary}\n\n"
-            f"Write ONE entry keyed to each of these beats:\n{beat_list}\n\n"
-            "Return ONLY a JSON array. Each element must have:\n"
+            f"Voice: {speech}\n\n"
+            "Return ONLY a JSON object with:\n"
             "- title: short evocative title (under 8 words)\n"
-            "- body: 80-150 words of first-person prose, no attribution tags, "
-            "no dialogue quotes — pure interior voice\n"
-            "- unlock_beat: integer, the beat index this entry is keyed to\n"
+            "- body: 80-140 words of first-person prose, no dialogue quotes, pure interior voice\n"
         )
 
-    raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False, timeout=600)
-    parsed = _parse_json(raw)
-    if isinstance(parsed, dict):
-        for v in parsed.values():
-            if isinstance(v, list):
-                parsed = v
-                break
-    if not isinstance(parsed, list):
-        return []
-
-    entries = []
-    for i, item in enumerate(parsed):
-        if not isinstance(item, dict):
-            continue
-        body = str(item.get("body", "")).strip()
-        title = str(item.get("title", "")).strip()
+    try:
+        raw = ollama_chat(model, [{"role": "user", "content": prompt}], stream=False, timeout=120)
+        parsed = _parse_json(raw)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+        if not isinstance(parsed, dict):
+            return None
+        body = str(parsed.get("body", "")).strip()
+        title = str(parsed.get("title", "")).strip()
         if not body or not title:
-            continue
-        try:
-            unlock_beat = int(item.get("unlock_beat", i))
-        except (TypeError, ValueError):
-            unlock_beat = i
-        unlock_beat = max(0, min(unlock_beat, len(beats) - 1))
-        entries.append({
-            "id": f"j{i}",
-            "title": title,
-            "body": body,
-            "unlock_beat": unlock_beat,
-        })
-    return entries
+            return None
+        return {"id": f"j{beat_idx}", "title": title, "body": body}
+    except Exception:
+        return None
 
 
 def build_system_prompt(profile: dict, story_context: str, lang: str = "en") -> str:

@@ -27,7 +27,7 @@ def _require_auth(f):
     """No-op decorator for compatibility."""
     return f
 
-from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entries, list_models, _assign_roles, OLLAMA_URL
+from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entry, list_models, _assign_roles, OLLAMA_URL
 import affinity
 
 STORIES_DIR = Path(__file__).parent / "stories"
@@ -1434,24 +1434,9 @@ def start():
     session["suggest_count"]  = 0
     session["suggest_next_setting"] = 3
 
-    # Load journal entries (NPC-POV memory unlocks).
-    # Journal is keyed by NPC name so each player_key/other_key combination
-    # gets its own file, and both can coexist on disk.
-    _cur_other = profile.get("other_name", "")
-    _safe_other = re.sub(r"[^\w]", "_", _cur_other.lower())
-    journal_file = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
-    try:
-        if journal_file.exists():
-            journal = json.loads(journal_file.read_text(encoding="utf-8"))
-        else:
-            journal = generate_journal_entries(profile, story_context, model, lang=story_lang)
-            try:
-                journal_file.write_text(json.dumps(journal, indent=2, ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
-    except Exception:
-        journal = []
-    session["journal"] = journal if isinstance(journal, list) else []
+    # Journal entries are generated dynamically as beats fire, based on the
+    # actual conversation. No pre-generation needed.
+    session["journal"] = []
     session["journal_unlocked"] = set()
 
     return {
@@ -1621,6 +1606,7 @@ def save_session():
         "beat_index": session.get("beat_index", 0),
         "affinity": session.get("affinity"),
         "affinity_history": session.get("affinity_history", []),
+        "journal": session.get("journal", []),
         "journal_unlocked": sorted(list(session.get("journal_unlocked", set()))),
         "summary": summary,
         "recent_messages": recent,
@@ -1724,14 +1710,8 @@ def resume_session():
     else:
         _assign_roles(profile, player_key="a")
 
-    # Load journal keyed by NPC name
-    _saved_other = save_data.get("other_name", profile.get("other_name", ""))
-    _safe_other  = re.sub(r"[^\w]", "_", _saved_other.lower())
-    journal_file = summaries_dir / f"{story_name}_journal_{_safe_other}.json"
-    try:
-        journal = json.loads(journal_file.read_text(encoding="utf-8")) if journal_file.exists() else []
-    except Exception:
-        journal = []
+    # Journal entries are stored in the save file directly (dynamically generated).
+    journal = save_data.get("journal", [])
 
     # Reconstruct system prompt
     story_file = _stories_dir(story_lang) / f"{story_name}.txt"
@@ -1993,13 +1973,24 @@ def chat():
                 {"role": "user", "content": user_input + nudge}
             ]
 
-    newly_unlocked = _unlock_journal_for_beat(beat_just_fired) if beat_just_fired is not None else []
-
     npc_name = session.get("other_name", "")
+    fired_beat_idx = beat_just_fired
+    fired_profile  = dict(session.get("profile", {})) if fired_beat_idx is not None else None
+    fired_messages = list(session["messages"]) if fired_beat_idx is not None else None
+    fired_model    = session.get("model", "")
+    fired_lang     = session.get("lang", "en")
+
     def wrapped():
         yield from _ollama_stream(messages_for_llm)
-        for entry in newly_unlocked:
-            yield f"data: {json.dumps({'journal_unlock': {'id': entry['id'], 'title': entry['title'], 'npc_name': npc_name}})}\n\n"
+        if fired_beat_idx is not None and fired_profile is not None:
+            entry = generate_journal_entry(
+                fired_profile, fired_messages, fired_beat_idx,
+                fired_model, fired_lang,
+            )
+            if entry:
+                session["journal"].append(entry)
+                session["journal_unlocked"].add(entry["id"])
+                yield f"data: {json.dumps({'journal_unlock': {'id': entry['id'], 'title': entry['title'], 'npc_name': npc_name}})}\n\n"
 
     return Response(
         stream_with_context(wrapped()),
@@ -2008,19 +1999,6 @@ def chat():
     )
 
 
-def _unlock_journal_for_beat(beat_idx: int) -> list:
-    """Mark all journal entries keyed to `beat_idx` as unlocked. Returns the newly-unlocked entries."""
-    journal = session.get("journal") or []
-    unlocked_ids = session.get("journal_unlocked")
-    if unlocked_ids is None:
-        unlocked_ids = set()
-        session["journal_unlocked"] = unlocked_ids
-    newly = []
-    for entry in journal:
-        if entry.get("unlock_beat") == beat_idx and entry.get("id") not in unlocked_ids:
-            unlocked_ids.add(entry["id"])
-            newly.append(entry)
-    return newly
 
 
 @app.route("/tts", methods=["POST"])

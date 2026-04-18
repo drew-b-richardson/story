@@ -1034,22 +1034,38 @@ _affinity_lock = threading.Lock()
 
 
 def _score_turn_async(profile_snap, msgs_snap, current_snap, model, lang):
-    delta = affinity.score_turn(profile_snap, msgs_snap, current_snap, model, lang)
-    if not delta:
-        return
-    with _affinity_lock:
-        current = session.get("affinity")
-        if not current:
+    try:
+        delta = affinity.score_turn(profile_snap, msgs_snap, current_snap, model, lang)
+        print(f"[affinity] score_turn delta: {delta}", flush=True)
+        if not delta:
             return
-        # Drop if we've fallen too far behind live turns (user typed faster than scorer).
-        if session.get("affinity_turn_counter", current["turn"]) > current["turn"] + 3:
-            return
-        new_current, entry = affinity.apply_delta(current, delta, current["turn"] + 1)
-        session["affinity"] = new_current
-        history = session.setdefault("affinity_history", [])
-        history.append(entry)
-        if len(history) > affinity.HISTORY_CAP:
-            del history[: len(history) - affinity.HISTORY_CAP]
+        with _affinity_lock:
+            current = session.get("affinity")
+            if not current:
+                print("[affinity] no current affinity in session", flush=True)
+                return
+            # Drop if we've fallen too far behind live turns (user typed faster than scorer).
+            if session.get("affinity_turn_counter", current["turn"]) > current["turn"] + 3:
+                print("[affinity] dropped (too far behind)", flush=True)
+                return
+            new_current, entry = affinity.apply_delta(current, delta, current["turn"] + 1)
+            session["affinity"] = new_current
+            print(f"[affinity] applied: trust={new_current['trust']} intimacy={new_current['intimacy']} tension={new_current['tension']} reason={delta.get('reason','')}", flush=True)
+            history = session.setdefault("affinity_history", [])
+            history.append(entry)
+            if len(history) > affinity.HISTORY_CAP:
+                del history[: len(history) - affinity.HISTORY_CAP]
+            # Refresh the system prompt in messages[0] so the story LLM sees the updated state.
+            profile = session.get("profile")
+            story_context = session.get("story_context", "")
+            messages = session.get("messages")
+            if profile and messages and messages[0]["role"] == "system":
+                messages[0]["content"] = build_system_prompt(
+                    profile, story_context, lang=lang, affinity=new_current
+                )
+    except Exception as e:
+        import traceback
+        print(f"[affinity] _score_turn_async ERROR: {e}\n{traceback.format_exc()}", flush=True)
 
 
 @app.route("/")
@@ -1365,7 +1381,8 @@ def start():
     other_pronoun  = "he" if other_gender == "male" else "she"
     player_pronoun = "you"  # player is always narrated in second person
 
-    system_prompt = build_system_prompt(profile, story_context, lang=story_lang)
+    system_prompt = build_system_prompt(profile, story_context, lang=story_lang,
+                                        affinity=session.get("affinity"))
 
     # Build secondary character registry: {name_lower: gender}
     secondary_characters = {}
@@ -1429,6 +1446,7 @@ def start():
     session["beat_next_turn"] = random.randint(5, 8)
     session["lang"]           = story_lang
     session["story_name"]     = story_name
+    session["story_context"]  = story_context
     session["affinity"]       = affinity.initial_affinity(profile)
     session["affinity_history"] = []
     session["suggest_count"]  = 0
@@ -1720,7 +1738,8 @@ def resume_session():
     except OSError:
         story_context = ""
 
-    system_prompt = build_system_prompt(profile, story_context, story_lang)
+    system_prompt = build_system_prompt(profile, story_context, story_lang,
+                                        affinity=session.get("affinity"))
 
     # Restore session state
     session["profile"] = profile
@@ -1784,6 +1803,7 @@ def resume_session():
         encoding="utf-8",
     )
     session["log_file"] = _log_path
+    session["story_context"]  = story_context
     session["suggest_count"] = 0
     session["suggest_next_setting"] = 3
 

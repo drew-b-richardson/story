@@ -6,6 +6,7 @@ then lets you live the story as the male or female lead.
 """
 
 import sys
+import re
 import json
 import textwrap
 import urllib.request
@@ -90,8 +91,11 @@ def _parse_json(raw: str) -> dict | list | None:
         start = cleaned.find(open_ch)
         end = cleaned.rfind(close_ch)
         if start != -1 and end > start:
+            candidate = cleaned[start:end + 1]
+            # LLMs sometimes emit +1 / +2 which is invalid JSON — strip leading +
+            candidate = re.sub(r':\s*\+(\d)', r': \1', candidate)
             try:
-                return json.loads(cleaned[start:end + 1])
+                return json.loads(candidate)
             except json.JSONDecodeError:
                 pass
     return None
@@ -510,13 +514,49 @@ def generate_journal_entry(profile: dict, recent_messages: list, beat_idx: int,
         return None
 
 
-def build_system_prompt(profile: dict, story_context: str, lang: str = "en") -> str:
+def build_system_prompt(profile: dict, story_context: str, lang: str = "en", affinity: dict | None = None) -> str:
     if lang == "ja":
-        return build_system_prompt_ja(profile, story_context)
-    return _build_system_prompt_en(profile, story_context)
+        return build_system_prompt_ja(profile, story_context, affinity=affinity)
+    return _build_system_prompt_en(profile, story_context, affinity=affinity)
 
 
-def _build_system_prompt_en(profile: dict, story_context: str) -> str:
+def _affinity_block_en(other_name: str, affinity: dict | None) -> str:
+    if not affinity:
+        return ""
+    trust = affinity.get("trust", 5)
+    intimacy = affinity.get("intimacy", 2)
+    tension = affinity.get("tension", 3)
+
+    trust_desc = (
+        f"{other_name} is deeply guarded and doubts the player's intentions. {other_name} deflects, keeps distance, and may refuse to engage warmly." if trust <= 2 else
+        f"{other_name} is wary and not fully at ease. {other_name} is polite but does not open up without reason." if trust <= 4 else
+        f"{other_name} is comfortable and believes the player means well." if trust <= 7 else
+        f"{other_name} trusts the player completely and lets their guard down fully."
+    )
+    intimacy_desc = (
+        f"There is no emotional closeness yet — interactions feel like those between strangers." if intimacy <= 1 else
+        f"There is some warmth between them, but real closeness has not formed." if intimacy <= 4 else
+        f"A genuine bond has grown; {other_name} feels connected and seen." if intimacy <= 7 else
+        f"The connection is deep and intimate; {other_name} is emotionally (and possibly physically) very close to the player."
+    )
+    tension_desc = (
+        f"The air between them is calm — no unresolved friction." if tension <= 2 else
+        f"There is mild underlying tension — something unspoken, a small unresolved edge." if tension <= 5 else
+        f"There is real friction between them. {other_name} may be brittle, guarded, or on the verge of confronting something." if tension <= 7 else
+        f"Tension is at a breaking point. {other_name} can barely contain it — a confrontation or rupture is imminent."
+    )
+
+    return f"""
+
+═══ CURRENT RELATIONSHIP STATE (trust {trust}/10, intimacy {intimacy}/10, tension {tension}/10) ═══
+This is the emotional reality right now. Let it shape every beat naturally — do NOT state these numbers aloud.
+
+Trust {trust}/10: {trust_desc}
+Intimacy {intimacy}/10: {intimacy_desc}
+Tension {tension}/10: {tension_desc}"""
+
+
+def _build_system_prompt_en(profile: dict, story_context: str, affinity: dict | None = None) -> str:
     other_name = profile.get("other_name", "Sarah")
     player_name = profile.get("player_name", "Alex")
     other_gender = profile.get("other_gender", "female").lower()
@@ -613,10 +653,47 @@ THINGS TO NEVER DO:
 - Do not let the user dictate {other_name}'s actions or feelings directly.
 - Do not summarize or skip over emotional moments.
 - Do not editorialize or break the fourth wall.
-- Do not use generic labels ("Her", "Him", "Narrator", "You") as character names. Every character has a real name."""
+- Do not use generic labels ("Her", "Him", "Narrator", "You") as character names. Every character has a real name.
+{_affinity_block_en(other_name, affinity)}"""
 
 
-def build_system_prompt_ja(profile: dict, story_context: str) -> str:
+def _affinity_block_ja(other_name: str, affinity: dict | None) -> str:
+    if not affinity:
+        return ""
+    trust = affinity.get("trust", 5)
+    intimacy = affinity.get("intimacy", 2)
+    tension = affinity.get("tension", 3)
+
+    trust_desc = (
+        f"{other_name}はプレイヤーに深い不信感を抱いており、距離を置き、温かく関わることを避けている。" if trust <= 2 else
+        f"{other_name}はやや警戒しており、礼儀正しいが、理由なく心を開かない。" if trust <= 4 else
+        f"{other_name}はプレイヤーを信頼しており、安心して接している。" if trust <= 7 else
+        f"{other_name}は完全にプレイヤーを信じており、一切の警戒を解いている。"
+    )
+    intimacy_desc = (
+        f"まだ感情的な距離がある。やりとりは初対面のようなよそよそしさを帯びている。" if intimacy <= 1 else
+        f"ある程度の温かさはあるが、深い絆はまだ形成されていない。" if intimacy <= 4 else
+        f"本物の繋がりが育まれており、{other_name}はプレイヤーとの結びつきを感じている。" if intimacy <= 7 else
+        f"深い親密さがある。{other_name}は感情的（あるいは身体的にも）非常に近い距離にいる。"
+    )
+    tension_desc = (
+        f"ふたりの間に緊張はない。穏やかな空気が流れている。" if tension <= 2 else
+        f"わずかな緊張感がある。言葉にされていない何か、小さな引っかかりが残っている。" if tension <= 5 else
+        f"ふたりの間には本物の摩擦がある。{other_name}は脆く、何かと対峙しそうな状態だ。" if tension <= 7 else
+        f"緊張は臨界点に達している。{other_name}はもう抑えきれず、対決か決裂が迫っている。"
+    )
+
+    return f"""
+
+═══ 現在の関係状態（信頼 {trust}/10、親密さ {intimacy}/10、緊張 {tension}/10）═══
+これが今の感情的な現実です。自然にシーンに反映させてください。数値を口に出してはいけません。
+
+信頼 {trust}/10: {trust_desc}
+親密さ {intimacy}/10: {intimacy_desc}
+緊張 {tension}/10: {tension_desc}"""
+
+
+def build_system_prompt_ja(profile: dict, story_context: str, affinity: dict | None = None) -> str:
     """Japanese-native system prompt. Mirrors the English version's structure and
     rules but writes them in Japanese so the model stays in-language."""
     other_name = profile.get("other_name", "彼女")
@@ -721,7 +798,8 @@ def build_system_prompt_ja(profile: dict, story_context: str) -> str:
 ・感情的な瞬間を要約・省略すること
 ・第四の壁を破ること、作者として語ること
 ・「彼女」「彼」「ナレーター」などを名前代わりに使うこと。全員に実名があること。
-・ASCIIの引用符（"）を使うこと。必ず「」を使うこと。"""
+・ASCIIの引用符（"）を使うこと。必ず「」を使うこと。
+{_affinity_block_ja(other_name, affinity)}"""
 
 
 def _assign_roles(profile: dict, player_key: str) -> None:

@@ -19,8 +19,6 @@ DEFAULT_MODEL = "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensi
 # Max chars to send as raw story before summarizing first
 STORY_CHAR_LIMIT = 8000
 
-
-
 NUM_CTX = 8192  # context window passed to every Ollama call
 
 

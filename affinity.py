@@ -19,7 +19,6 @@ from story import OLLAMA_URL, NUM_CTX, _parse_json
 SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
 SUMMARIES_DIR_JA = Path(__file__).parent / "story_summaries_jp"
 
-DEFAULT_AFFINITY = {"trust": 5, "intimacy": 0, "tension": 0}
 CLAMP_MIN = 0
 CLAMP_MAX = 10
 MAX_DELTA = 2

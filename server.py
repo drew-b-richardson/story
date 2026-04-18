@@ -10,22 +10,14 @@ import json
 import os
 import random
 import re
-import secrets
 import struct
 import subprocess
 import sys
 import threading
 import urllib.request
 import urllib.error
-from functools import wraps
 from pathlib import Path
 from flask import Flask, request, Response, send_file, stream_with_context
-
-
-
-def _require_auth(f):
-    """No-op decorator for compatibility."""
-    return f
 
 from story import analyze_story, enrich_character_profile, build_system_prompt, generate_journal_entry, list_models, _assign_roles, OLLAMA_URL
 import affinity
@@ -363,8 +355,6 @@ _SPEECH_VERBS = (
     r"interrupted|interrupt|interrupts|protested|protest|protests|"
     r"admitted|admit|admits|confessed|confess|confesses)"
 )
-# Player-specific version kept for backwards compat but now same coverage
-_PLAYER_SPEECH_VERBS = _SPEECH_VERBS
 _NAMED_ATTR_RE = re.compile(rf'\b([A-Z][a-z]{{2,}})\s+{_SPEECH_VERBS}\b')
 
 
@@ -393,7 +383,7 @@ def _detect_speaker(narr: str, player_name: str, other_name: str, other_pronoun:
     candidates: list[tuple[int, str, bool]] = []
 
     # Player: "you said/asked/…" (second-person, present or past)
-    for m in re.finditer(rf'\byou\s+{_PLAYER_SPEECH_VERBS}\b', narr, re.IGNORECASE):
+    for m in re.finditer(rf'\byou\s+{_SPEECH_VERBS}\b', narr, re.IGNORECASE):
         candidates.append((m.start(), "player", True))
 
     # Player by name: "Andrew said" (third-person fallback)
@@ -1069,7 +1059,6 @@ def _score_turn_async(profile_snap, msgs_snap, current_snap, model, lang):
 
 
 @app.route("/")
-@_require_auth
 def index():
     return send_file("index.html")
 
@@ -1104,7 +1093,6 @@ def _extract_story_summary(story_md_path: Path) -> str:
 
 
 @app.route("/stories")
-@_require_auth
 def stories():
     lang = (request.args.get("lang") or "en").lower()
     analyzed_only = request.args.get("analyzed") == "1"
@@ -1266,7 +1254,6 @@ def translate():
 
 
 @app.route("/start", methods=["POST"])
-@_require_auth
 def start():
     data = request.json
     model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
@@ -1295,9 +1282,7 @@ def start():
         chosen = random.choice(all_stories)
         story_name = chosen.stem
 
-    # Check if summaries exist for this story (in the language-scoped folder)
     summaries_dir = _summaries_dir(story_lang)
-    char_file = summaries_dir / f"{story_name}_character.md"
     profile_file = summaries_dir / f"{story_name}_profile.json"
     story_md_file = summaries_dir / f"{story_name}_story.md"
 
@@ -1532,7 +1517,6 @@ def _ollama_stream(messages):
 
 
 @app.route("/open", methods=["POST"])
-@_require_auth
 def open_story():
     _pname = session.get("player_name", "the player")
     _oname = session.get("other_name", "the NPC")
@@ -1552,7 +1536,6 @@ def open_story():
 
 
 @app.route("/affinity", methods=["GET"])
-@_require_auth
 def get_affinity():
     return {
         "affinity": session.get("affinity"),
@@ -1561,7 +1544,6 @@ def get_affinity():
 
 
 @app.route("/recap", methods=["POST"])
-@_require_auth
 def recap():
     profile = session.get("profile")
     history = session.get("affinity_history", [])
@@ -1589,7 +1571,6 @@ def recap():
 
 
 @app.route("/save", methods=["POST"])
-@_require_auth
 def save_session():
     """Save current session to disk, generating a comprehensive summary."""
     profile = session.get("profile")
@@ -1641,7 +1622,6 @@ def save_session():
 
 
 @app.route("/saves", methods=["GET"])
-@_require_auth
 def list_saves():
     """List all saved sessions with metadata."""
     if not SAVES_DIR.exists():
@@ -1668,7 +1648,6 @@ def list_saves():
 
 
 @app.route("/saves/<save_id>", methods=["DELETE"])
-@_require_auth
 def delete_save(save_id):
     """Delete a saved session."""
     save_id = save_id.strip()
@@ -1687,7 +1666,6 @@ def delete_save(save_id):
 
 
 @app.route("/resume", methods=["POST"])
-@_require_auth
 def resume_session():
     """Resume a saved session."""
     import datetime
@@ -1812,17 +1790,15 @@ def resume_session():
         "player_name": save_data.get("player_name", ""),
         "setting": _str(profile.get("setting", "")),
         "stage": _str(profile.get("relationship_stage", "")),
-        "summary": _str(profile.get("story_summary", "")),
+        "summary": save_data.get("summary", ""),
         "personality": profile.get("player_personality", []),
         "affinity": session.get("affinity"),
         "resumed": True,
         "beat_index": session.get("beat_index"),
-        "summary": save_data.get("summary", ""),
     }
 
 
 @app.route("/suggest", methods=["POST"])
-@_require_auth
 def suggest():
     """Return 2-3 short action options the player could take, based on current context."""
     if not session["messages"]:
@@ -1943,7 +1919,6 @@ def suggest():
 
 
 @app.route("/chat", methods=["POST"])
-@_require_auth
 def chat():
     data = request.json
     user_input = data.get("message", "").strip()
@@ -2007,8 +1982,6 @@ def chat():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
 
 
 @app.route("/tts", methods=["POST"])
@@ -2082,7 +2055,6 @@ def tts():
 
 
 @app.route("/journal", methods=["GET"])
-@_require_auth
 def journal_list():
     """Return the journal entries for the current session.
 
@@ -2109,7 +2081,6 @@ def journal_list():
 
 
 @app.route("/journal/tts", methods=["POST"])
-@_require_auth
 def journal_tts():
     """Render a journal entry with the NPC's voice."""
     data = request.json or {}

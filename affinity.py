@@ -246,8 +246,14 @@ def _format_for_scorer(msgs: list, other_name: str) -> str:
 def score_turn(profile: dict, recent_msgs: list, current: dict, model: str, lang: str = "en") -> dict | None:
     other_name = profile.get("other_name") or "the NPC"
     stage = profile.get("relationship_stage") or ""
-    desires = ", ".join(profile.get("desires", []) or []) or "—"
-    dealbreakers = ", ".join(profile.get("dealbreakers", []) or []) or "—"
+    def _coerce_str(val) -> str:
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            return ", ".join(str(v) for v in val)
+        return str(val) if val else ""
+    desires = _coerce_str(profile.get("desires") or "") or "—"
+    dealbreakers = _coerce_str(profile.get("dealbreakers") or "") or "—"
 
     # Rule-based override: don't waste an LLM call on obvious violence/cruelty.
     player_text = _last_player_message(recent_msgs)

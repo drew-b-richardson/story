@@ -1190,8 +1190,12 @@ def check_analysis(story_name):
     try:
         story_name = story_name.strip()
         lang = (request.args.get("lang") or "en").lower()
-        char_file = _summaries_dir(lang) / f"{story_name}_character.md"
+        base = _summaries_dir(lang).resolve()
+        char_file = (base / f"{story_name}_character.md").resolve()
+        char_file.relative_to(base)
         return {"analyzed": char_file.exists()}
+    except (ValueError, RuntimeError):
+        return {"analyzed": False}, 400
     except Exception:
         return {"analyzed": False}
 
@@ -1201,8 +1205,12 @@ def check_translation(story_name):
     """Check if an English story has already been translated to JA."""
     try:
         story_name = story_name.strip().replace(".txt", "")
-        translated = STORIES_DIR_JA / f"{story_name}.txt"
+        base = STORIES_DIR_JA.resolve()
+        translated = (base / f"{story_name}.txt").resolve()
+        translated.relative_to(base)
         return {"translated": translated.exists()}
+    except (ValueError, RuntimeError):
+        return {"translated": False}, 400
     except Exception:
         return {"translated": False}
 
@@ -1213,6 +1221,8 @@ def translate():
     data = request.json or {}
     story_name = (data.get("story") or "").strip().replace(".txt", "")
     model = data.get("model") or "qwen-ja"
+    if not re.match(r'^[\w\.\-/:]+$', model):
+        return {"error": "Invalid model name"}, 400
 
     if not story_name:
         return {"error": "No story name provided"}, 400
@@ -1255,7 +1265,7 @@ def translate():
 
 @app.route("/start", methods=["POST"])
 def start():
-    data = request.json
+    data = request.json or {}
     model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
 
     story_lang = (data.get("lang") or "en").lower()
@@ -1470,6 +1480,7 @@ def _ollama_stream(messages):
     )
 
     full = []
+    url_error = None
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for line in resp:
@@ -1487,31 +1498,35 @@ def _ollama_stream(messages):
                 except json.JSONDecodeError:
                     continue
     except urllib.error.URLError as e:
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        url_error = str(e)
+    finally:
+        assembled = "".join(full)
+        if assembled:
+            session["messages"].append({"role": "assistant", "content": assembled})
+            # Skip logging the internal story-open trigger message as a user turn
+            user_turns = [m for m in session.get("messages", []) if m["role"] == "user"
+                          and not m["content"].startswith("[Begin the story")]
+            if user_turns:
+                _append_log("user", user_turns[-1]["content"])
+            _append_log("assistant", assembled)
+            # Fire-and-forget affinity scoring on a daemon thread. Snapshots avoid races.
+            if session.get("profile") and session.get("affinity") is not None:
+                session["affinity_turn_counter"] = session["affinity"]["turn"] + 1
+                threading.Thread(
+                    target=_score_turn_async,
+                    args=(
+                        dict(session["profile"]),
+                        list(session["messages"][-6:]),
+                        dict(session["affinity"]),
+                        session["model"],
+                        session.get("lang", "en"),
+                    ),
+                    daemon=True,
+                ).start()
+
+    if url_error:
+        yield f"data: {json.dumps({'error': url_error})}\n\n"
         return
-
-    assembled = "".join(full)
-    session["messages"].append({"role": "assistant", "content": assembled})
-    # Log the last user prompt (if any) and the assembled reply
-    user_turns = [m for m in session.get("messages", []) if m["role"] == "user"]
-    if user_turns:
-        _append_log("user", user_turns[-1]["content"])
-    _append_log("assistant", assembled)
-
-    # Fire-and-forget affinity scoring on a daemon thread. Snapshots avoid races.
-    if session.get("profile") and session.get("affinity") is not None:
-        session["affinity_turn_counter"] = session["affinity"]["turn"] + 1
-        threading.Thread(
-            target=_score_turn_async,
-            args=(
-                dict(session["profile"]),
-                list(session["messages"][-6:]),
-                dict(session["affinity"]),
-                session["model"],
-                session.get("lang", "en"),
-            ),
-            daemon=True,
-        ).start()
 
     yield f"data: {json.dumps({'done': True, 'affinity': session.get('affinity')})}\n\n"
 
@@ -1654,7 +1669,13 @@ def delete_save(save_id):
     if not save_id:
         return {"error": "no save_id provided"}, 400
 
-    save_path = SAVES_DIR / f"{save_id}.json"
+    try:
+        base = SAVES_DIR.resolve()
+        save_path = (base / f"{save_id}.json").resolve()
+        save_path.relative_to(base)
+    except (ValueError, RuntimeError):
+        return {"error": "invalid save_id"}, 400
+
     if not save_path.exists():
         return {"error": "save not found"}, 404
 
@@ -1674,7 +1695,13 @@ def resume_session():
     if not save_id:
         return {"error": "no save_id provided"}, 400
 
-    save_path = SAVES_DIR / f"{save_id}.json"
+    try:
+        base = SAVES_DIR.resolve()
+        save_path = (base / f"{save_id}.json").resolve()
+        save_path.relative_to(base)
+    except (ValueError, RuntimeError):
+        return {"error": "invalid save_id"}, 400
+
     if not save_path.exists():
         return {"error": "save not found"}, 404
 
@@ -1728,11 +1755,21 @@ def resume_session():
     session["other_name"] = save_data.get("other_name", "")
     session["other_pronoun"] = profile.get("other_pronoun", "she")
     session["player_pronoun"] = profile.get("player_pronoun", "you")
-    session["secondary_characters"] = profile.get("secondary_characters", {})
+    # Build secondary character registry: {name_lower: gender}
+    secondary_characters = {}
+    for sc in profile.get("secondary_characters", []):
+        if isinstance(sc, dict):
+            name = sc.get("name", "").strip()
+            gender = sc.get("gender", "").lower()
+            if name and gender in ("male", "female"):
+                secondary_characters[name.lower()] = gender
+    session["secondary_characters"] = secondary_characters
     session["story_beats"] = profile.get("story_beats", [])
     session["beat_index"] = save_data.get("beat_index", 0)
     session["beat_next_turn"] = random.randint(5, 8)
-    session["affinity"] = affinity.initial_affinity(profile)
+    # Restore saved affinity if present, otherwise compute baseline
+    saved_affinity = save_data.get("affinity")
+    session["affinity"] = saved_affinity if isinstance(saved_affinity, dict) else affinity.initial_affinity(profile)
     session["affinity_history"] = []
     session["suggest_count"]  = 0
     session["suggest_next_env"] = random.randint(2, 5)
@@ -1755,9 +1792,9 @@ def resume_session():
     # If genders match, use secondary voices for player
     if player_gender == other_gender:
         if player_gender == "male":
-            session["player_voice"], session["player_lang"] = SECONDARY_MALE_CHARACTER_VOICE, PRIMARY_MALE_CHARACTER_LANG
+            session["player_voice"], session["player_lang"] = SECONDARY_MALE_CHARACTER_VOICE, SECONDARY_MALE_CHARACTER_LANG
         else:
-            session["player_voice"], session["player_lang"] = SECONDARY_FEMALE_CHARACTER_VOICE, PRIMARY_FEMALE_CHARACTER_LANG
+            session["player_voice"], session["player_lang"] = SECONDARY_FEMALE_CHARACTER_VOICE, SECONDARY_FEMALE_CHARACTER_LANG
 
     # Reconstruct messages: system prompt + summary only (no recent verbatim history)
     messages = [{"role": "system", "content": system_prompt}]
@@ -1920,7 +1957,7 @@ def suggest():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
+    data = request.json or {}
     user_input = data.get("message", "").strip()
 
     if not user_input:

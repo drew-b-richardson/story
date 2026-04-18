@@ -1857,7 +1857,7 @@ def suggest():
             f"必ず有効なJSON配列（{n}つの日本語文字列）のみを返してください。"
             "前置きやマークダウン、中国語、英語は一切混ぜないこと。"
         )
-        setting_hint = f"舞台：{setting_str}\n" if setting_str else ""
+        setting_hint = f"舞台：{setting_str}\n" if (include_env and setting_str) else ""
         env_item = (
             "[2] 環境・場所に関わる行動（相手との関係ではなく）。"
             "現在のシーンの場所から自然につながる提案にすること（現在いる場所と無関係な観光地や有名スポットを突然出さない）。"
@@ -1866,8 +1866,8 @@ def suggest():
         suggest_prompt = (
             f"{setting_hint}"
             f"JSON配列で{n}つの行動候補を返してください。順番どおりに:\n"
-            "[0] 相手に対する大胆・直接的な行動または台詞（1〜2文）\n"
-            "[1] 相手に対する優しく温かい行動または台詞（1〜2文）\n"
+            "[0] 相手との関係に関する行動・台詞（大胆・直接的）。場所や環境の話題は含めないこと。（1〜2文）\n"
+            "[1] 相手との関係に関する行動・台詞（優しく温かい）。場所や環境の話題は含めないこと。（1〜2文）\n"
             f"{env_item}"
             "プレイヤー（「私」または主語省略）の視点で書くこと。必ず日本語のみ。"
             "JSON配列のみを返すこと。コードフェンスや説明文は一切含めない。"
@@ -1878,7 +1878,7 @@ def suggest():
             "You are a creative writing assistant. Your only job is to suggest player actions. "
             f"You must respond with ONLY a valid JSON array of exactly {n} strings. No prose, no markdown."
         )
-        setting_hint = f"Story setting: {setting_str}\n" if setting_str else ""
+        setting_hint = f"Story setting: {setting_str}\n" if (include_env and setting_str) else ""
         env_item = (
             "[2] An action about the environment or a nearby place — NOT about the relationship. "
             "It must follow naturally from where the characters currently are; do NOT invent unrelated famous landmarks or distant locations. "
@@ -1888,8 +1888,8 @@ def suggest():
         suggest_prompt = (
             f"{setting_hint}"
             f"Return a JSON array of exactly {n} player actions, in this order:\n"
-            "[0] A bold or direct action toward the other character (1-2 sentences, first person)\n"
-            "[1] A tender or warm action toward the other character (1-2 sentences, first person)\n"
+            "[0] A bold or direct action toward the other character — about the relationship, NOT about the setting (1-2 sentences, first person)\n"
+            "[1] A tender or warm action toward the other character — about the relationship, NOT about the setting (1-2 sentences, first person)\n"
             f"{env_item}"
             f"Return ONLY a JSON array of {n} strings. No prose, no markdown fences, no commentary."
         )

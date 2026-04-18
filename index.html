@@ -528,8 +528,8 @@
     line-height: 1;
     cursor: default;
     user-select: none;
-    transition: color 0.6s ease, text-shadow 0.6s ease;
-    color: hsl(0, 60%, 55%);
+    transition: color 0.6s ease, font-size 0.6s ease, text-shadow 0.6s ease;
+    color: hsl(240, 60%, 55%);
     text-shadow: none;
     animation: affinity-pulse 2s ease-in-out infinite;
     animation-play-state: paused;
@@ -745,6 +745,18 @@
     border-color: var(--accent);
   }
 
+  #suggest-spinner {
+    display: none;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0.2rem auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   #input-area {
     background: var(--surface);
     border-top: 1px solid var(--border);
@@ -848,7 +860,7 @@
     </div>
     <div id="chat-header-icons">
       <div id="tts-indicator" title="Speaking…"></div>
-      <span id="affinity-dot" title="" aria-label="Affinity">♥</span>
+      <span id="affinity-dot" title="" aria-label="Affinity">♥&#xFE0E;</span>
       <button id="btn-save" title="Save progress" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">💾</button>
       <button id="btn-view-recap" title="View relationship recap" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; padding: 0.4rem 0.7rem; border-radius: 8px; cursor: pointer; line-height: 1;">📊</button>
       <button id="btn-mute" title="Toggle voice">🔊</button>
@@ -883,7 +895,7 @@
 
   <div id="messages"></div>
 
-  <div id="suggestions"></div>
+  <div id="suggestions"><div id="suggest-spinner"></div></div>
 
   <div id="input-area">
     <textarea id="user-input" rows="1" placeholder="Say or do something…"></textarea>
@@ -1331,11 +1343,15 @@ function clearSuggestions() {
   if (suggestController) { suggestController.abort(); suggestController = null; }
   const el = $('suggestions');
   el.style.display = 'none';
-  el.innerHTML = '';
+  el.innerHTML = '<div id="suggest-spinner"></div>';
 }
 
 async function loadSuggestions() {
   clearSuggestions();
+  const el = $('suggestions');
+  const spinner = $('suggest-spinner');
+  spinner.style.display = 'block';
+  el.style.display = 'flex';
   const controller = new AbortController();
   suggestController = controller;
   try {
@@ -1347,9 +1363,9 @@ async function loadSuggestions() {
     });
     const data = await res.json();
     if (controller.signal.aborted) return;
+    spinner.style.display = 'none';
     const chips = data.suggestions || [];
-    if (!chips.length) return;
-    const el = $('suggestions');
+    if (!chips.length) { el.style.display = 'none'; return; }
     chips.forEach(text => {
       const btn = document.createElement('button');
       btn.className = 'suggestion-chip';
@@ -1366,6 +1382,8 @@ async function loadSuggestions() {
     });
     el.style.display = 'flex';
   } catch (e) {
+    spinner.style.display = 'none';
+    el.style.display = 'none';
     if (e.name !== 'AbortError') console.warn('Suggest error:', e);
   }
 }
@@ -1463,22 +1481,24 @@ function updateAffinityDot(a) {
     el.title = '';
     return;
   }
-  // Hue: trust 0 = red (0°), 5 = pink (340°), 10 = warm gold (45°).
-  // Interpolate via two segments so the dot shifts smoothly across the dial.
-  const t = Math.max(0, Math.min(10, a.trust));
+  // Hue: intimacy 0 = blue (240°), 5 = red (360°), 10 = warm gold (45°).
+  // Stays in the blue→purple→red→orange band — never crosses green.
+  const i = Math.max(0, Math.min(10, a.intimacy));
   let hue;
-  if (t <= 5) hue = 0 + (340 - 0) * (t / 5);            // 0° → 340°
-  else        hue = 340 + (45 + 360 - 340) * ((t - 5) / 5);
+  if (i <= 5) hue = 240 + (360 - 240) * (i / 5);        // 240° → 360°
+  else        hue = 0 + 45 * ((i - 5) / 5);              // 0° → 45°
   hue = ((hue % 360) + 360) % 360;
-  const sat = 55 + a.intimacy * 2;   // 55–75%
-  const light = 45 + a.intimacy * 1; // 45–55%
+  const sat = 55 + a.trust * 2;   // 55–75%
+  const light = 45 + a.trust * 1; // 45–55%
   el.style.color = `hsl(${hue}, ${sat}%, ${light}%)`;
-  el.style.opacity = (0.55 + 0.045 * a.intimacy).toFixed(2);
-  // Intimacy → pulse speed. 0 = paused, 10 = ~0.7s.
-  if (a.intimacy <= 0) {
+  el.style.opacity = (0.55 + 0.045 * a.trust).toFixed(2);
+  // Trust → size. 0 = 0.75rem, 10 = 1.45rem.
+  el.style.fontSize = (0.75 + a.trust * 0.07).toFixed(2) + 'rem';
+  // Tension → pulse speed. 0 = paused, 10 = ~0.7s.
+  if (a.tension <= 0) {
     el.style.animationPlayState = 'paused';
   } else {
-    const dur = (2.2 - 0.15 * a.intimacy).toFixed(2);
+    const dur = (2.2 - 0.15 * a.tension).toFixed(2);
     el.style.animationDuration = `${dur}s`;
     el.style.animationPlayState = 'running';
   }

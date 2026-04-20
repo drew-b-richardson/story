@@ -578,13 +578,13 @@ def start():
     other_gender  = profile.get("other_gender", "female").lower()
     player_gender = profile.get("player_gender", "male").lower()
 
-    # Ensure both characters have real names
+    # Ensure both characters have real names; always assign Japanese names in JA mode.
     other_name = profile.get("other_name", "").strip()
-    if not other_name or other_name.lower() in _PRONOUN_STOPS:
+    if story_lang == "ja" or not other_name or other_name.lower() in _PRONOUN_STOPS:
         profile["other_name"] = random.choice(_FEMALE_NAMES if other_gender == "female" else _MALE_NAMES)
 
     player_name = profile.get("player_name", "").strip()
-    if not player_name or player_name.lower() in _PRONOUN_STOPS:
+    if story_lang == "ja" or not player_name or player_name.lower() in _PRONOUN_STOPS:
         profile["player_name"] = random.choice(_MALE_NAMES if player_gender == "male" else _FEMALE_NAMES)
 
     # Assign PRIMARY voices deterministically by gender.

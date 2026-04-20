@@ -337,12 +337,18 @@ def _detect_speaker_ja(narr_before: str, narr_after: str,
         if re.search(rf'{re.escape(sc_name)}(?:は|が|も|、|\s)', attr):
             return role
 
+    # Subject-position あなた/君 beats pronoun matching: e.g. 「…」preceded by
+    # "あなたは彼女を見て笑った" → player is the subject/speaker, not the NPC.
+    if re.search(r'あなた[はが]', attr) or re.search(r'君[はが](?!.*さん)', attr):
+        return "player"
+
     # Pronouns: 彼女 (she) must be checked before 彼 (he) since it contains 彼.
     if "彼女" in attr:
         return "other" if other_gender == "female" else "secondary_female"
     if re.search(r'彼(?!女)', attr):
         return "other" if other_gender == "male" else "secondary_male"
 
+    # Weak あなた/君 signal (object form, e.g. "彼女はあなたに言った" already caught above).
     if "あなた" in attr or re.search(r'君(?!.*さん)', attr):
         return "player"
 

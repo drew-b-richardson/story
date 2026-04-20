@@ -125,6 +125,8 @@ _SPEECH_VERBS = (
     r"interrupted|interrupt|interrupts|protested|protest|protests|"
     r"admitted|admit|admits|confessed|confess|confesses)"
 )
+# Matches "Name said/whispered/etc." — a capitalized proper name followed by a speech verb,
+# used to attribute a quoted line to a named character without relying on pronouns.
 _NAMED_ATTR_RE = re.compile(rf'\b([A-Z][a-z]{{2,}})\s+{_SPEECH_VERBS}\b')
 
 

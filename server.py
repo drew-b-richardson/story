@@ -34,6 +34,8 @@ from tts import (
 )
 from summaries import _profile_to_markdown, _profile_to_story_markdown, _str, _trim_characters
 
+DEFAULT_MODEL = "nemo"
+
 STORIES_DIR = Path(__file__).parent / "stories"
 STORIES_DIR_JA = Path(__file__).parent / "stories_ja"
 SUMMARIES_DIR = Path(__file__).parent / "story_summaries"
@@ -41,14 +43,11 @@ SUMMARIES_DIR_JA = Path(__file__).parent / "story_summaries_jp"
 LOGS_DIR = Path(__file__).parent / "logs"
 SAVES_DIR = Path(__file__).parent / "saves"
 
-
 def _summaries_dir(lang: str) -> Path:
     return SUMMARIES_DIR_JA if (lang or "").lower() == "ja" else SUMMARIES_DIR
 
-
 def _stories_dir(lang: str) -> Path:
     return STORIES_DIR_JA if (lang or "").lower() == "ja" else STORIES_DIR
-
 
 def _append_log(role: str, content: str) -> None:
     """Append a single message turn to the active session log file."""
@@ -195,8 +194,6 @@ def _compress_history() -> None:
         except OSError:
             pass
 
-
-
 def _generate_save_summary(lang: str = "en") -> str:
     """Generate a comprehensive multi-paragraph narrative summary of the current session
     for save file. Unlike _compress_history, this does not mutate session state."""
@@ -255,7 +252,7 @@ app = Flask(__name__)
 session = {
     "messages":       [],
     "profile":        None,
-    "model":          "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M",
+    "model":          DEFAULT_MODEL,
     "other_voice":    PRIMARY_FEMALE_CHARACTER_VOICE,
     "other_lang":     PRIMARY_FEMALE_CHARACTER_LANG,
     "other_name":     None,
@@ -397,7 +394,7 @@ def analyze():
     try:
         # Read and analyze story
         story_text = story_file.read_text(encoding="utf-8", errors="replace")
-        model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
+        model = data.get("model", DEFAULT_MODEL)
 
         summaries_dir = _summaries_dir(analyze_lang)
         summaries_dir.mkdir(exist_ok=True)
@@ -521,44 +518,28 @@ def translate():
 @app.route("/start", methods=["POST"])
 def start():
     data = request.json or {}
-    model = data.get("model", "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M")
-
+    model = data.get("model", DEFAULT_MODEL)
     story_lang = (data.get("lang") or "en").lower()
     if story_lang not in ("en", "ja"):
         story_lang = "en"
 
-    stories_src = _stories_dir(story_lang)
-    all_stories = list(stories_src.glob("*.txt")) if stories_src.exists() else []
-    if not all_stories:
-        return {"error": f"No .txt files found in {stories_src}"}, 400
+    summaries_dir = _summaries_dir(story_lang)
+    analyzed = [p.stem.replace("_profile", "") for p in summaries_dir.glob("*_profile.json")] if summaries_dir.exists() else []
+    if not analyzed:
+        return {"error": f"No analyzed stories found in {summaries_dir}. Use /index_stories to analyze a story first."}, 400
 
     story_pick = data.get("story", "random")
     if story_pick and story_pick != "random":
-        # Remove .txt extension if included
         story_name = story_pick.replace(".txt", "")
-        chosen = (stories_src / f"{story_name}.txt").resolve()
-        try:
-            chosen.relative_to(stories_src.resolve())
-        except ValueError:
-            return {"error": "Invalid story path"}, 400
-        if not chosen.exists():
-            return {"error": f"Story not found: {story_pick}"}, 400
     else:
-        chosen = random.choice(all_stories)
-        story_name = chosen.stem
+        story_name = random.choice(analyzed)
 
-    summaries_dir = _summaries_dir(story_lang)
     profile_file = summaries_dir / f"{story_name}_profile.json"
     story_md_file = summaries_dir / f"{story_name}_story.md"
 
     try:
-        if profile_file.exists() and story_md_file.exists():
-            # Load from saved summaries
-            profile = json.loads(profile_file.read_text(encoding="utf-8"))
-            story_context = story_md_file.read_text(encoding="utf-8")
-        else:
-            story_text = chosen.read_text(encoding="utf-8", errors="replace")
-            profile, story_context = analyze_story(story_text, model, lang=story_lang)
+        profile = json.loads(profile_file.read_text(encoding="utf-8"))
+        story_context = story_md_file.read_text(encoding="utf-8")
     except Exception as e:
         return {"error": str(e)}, 500
 
@@ -643,7 +624,7 @@ def start():
             secondary_characters[name.lower()] = gender
 
     print("\n" + "═" * 60)
-    print(f"  STORY : {chosen.name}")
+    print(f"  STORY : {story_name}")
     print("═" * 60)
     print(json.dumps(profile, indent=2, ensure_ascii=False))
     print("═" * 60)

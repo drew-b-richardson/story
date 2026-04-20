@@ -10,7 +10,7 @@ python server.py          # web UI at http://localhost:5000
 python story.py <story_file.txt> [model]   # CLI mode
 ```
 
-Ollama must be running separately (`ollama serve`). The default model is `hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M`.
+Ollama must be running separately (`ollama serve`). The default model is `nemo` (Mistral Nemo 12B, renamed via `ollama cp`).
 
 ## Dependencies
 

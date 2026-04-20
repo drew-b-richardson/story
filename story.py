@@ -14,7 +14,7 @@ import urllib.error
 from pathlib import Path
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL = "hf.co/mradermacher/mistralai-Mistral-Nemo-Instruct-2407-extensive-BP-abliteration-12B-GGUF:Q4_K_M"
+DEFAULT_MODEL = "nemo"
 
 # Max chars to send as raw story before summarizing first
 STORY_CHAR_LIMIT = 8000
